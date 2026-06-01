@@ -1,15 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ScheduleList from "./ScheduleList";
-import type { ApiStatus, DailySummary } from "../types";
+import PurchaseLogs from "./PurchaseLogs";
+import type { ApiStatus, PurchaseLog } from "../types";
 
 export default function Dashboard() {
-  const [summary] = useState<DailySummary>({
-    totalKrw: 0,
-    totalBtc: 0,
-    date: new Date().toLocaleDateString("ko-KR"),
-  });
-
+  const [logs, setLogs] = useState<PurchaseLog[]>([]);
   const [apiStatus, setApiStatus] = useState<ApiStatus>({
     connected: false,
     hasCredentials: false,
@@ -19,7 +15,28 @@ export default function Dashboard() {
     invoke<ApiStatus>("get_api_status")
       .then(setApiStatus)
       .catch(() => setApiStatus({ connected: false, hasCredentials: false }));
+
+    invoke<PurchaseLog[]>("get_purchase_logs")
+      .then(setLogs)
+      .catch(() => setLogs([]));
   }, []);
+
+  const summary = useMemo(() => {
+    const today = new Date().toLocaleDateString("ko-KR");
+    return logs
+      .filter(
+        (log) =>
+          log.status === "success" &&
+          new Date(log.executedAt).toLocaleDateString("ko-KR") === today,
+      )
+      .reduce(
+        (acc, log) => ({
+          totalKrw: acc.totalKrw + log.amountKrw,
+          totalBtc: acc.totalBtc + log.volumeBtc,
+        }),
+        { totalKrw: 0, totalBtc: 0 },
+      );
+  }, [logs]);
 
   const connectionLabel = apiStatus.connected
     ? "업비트 연결됨"
@@ -56,6 +73,7 @@ export default function Dashboard() {
       </div>
 
       <ScheduleList />
+      <PurchaseLogs logs={logs} />
     </div>
   );
 }

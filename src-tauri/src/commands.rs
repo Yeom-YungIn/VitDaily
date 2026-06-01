@@ -137,6 +137,15 @@ pub async fn set_notifications_enabled(enabled: bool) -> Result<AppSettings, Str
     Ok(settings)
 }
 
+// --- Logs ---
+
+#[command]
+pub async fn get_purchase_logs() -> Result<Vec<PurchaseLog>, String> {
+    let mut logs = load_logs().map_err(|e| e.to_string())?;
+    logs.sort_by(|a, b| b.executed_at.cmp(&a.executed_at));
+    Ok(logs)
+}
+
 pub async fn run_scheduler<R: Runtime>(app: AppHandle<R>) {
     let mut ticker = interval(Duration::from_secs(30));
 
