@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { Schedule } from "../types";
 
+type ApplyMode = "tomorrow" | "today";
+
 interface Props {
   initial: Schedule | null;
   onSave: (schedule: Schedule) => void;
@@ -10,6 +12,7 @@ interface Props {
 export default function ScheduleForm({ initial, onSave, onCancel }: Props) {
   const [time, setTime] = useState(initial?.time ?? "09:00");
   const [amount, setAmount] = useState(initial?.amount?.toString() ?? "5000");
+  const [applyMode, setApplyMode] = useState<ApplyMode>("tomorrow");
   const [error, setError] = useState("");
 
   function handleSubmit() {
@@ -23,15 +26,23 @@ export default function ScheduleForm({ initial, onSave, onCancel }: Props) {
     const isEdit = !!initial;
 
     const schedule: Schedule = isEdit
-      ? {
-          ...initial!,
-          pendingChange: {
+      ? applyMode === "today"
+        ? {
+            ...initial!,
             time,
             amount: amountNum,
-            applyAt: getTomorrowMidnight(),
-          },
-          updatedAt: now,
-        }
+            pendingChange: undefined,
+            updatedAt: now,
+          }
+        : {
+            ...initial!,
+            pendingChange: {
+              time,
+              amount: amountNum,
+              applyAt: getTomorrowMidnight(),
+            },
+            updatedAt: now,
+          }
       : {
           id: crypto.randomUUID(),
           time,
@@ -75,9 +86,44 @@ export default function ScheduleForm({ initial, onSave, onCancel }: Props) {
         </div>
 
         {initial && (
-          <p className="text-xs text-yellow-400 bg-yellow-400/10 rounded px-3 py-2">
-            변경 사항은 익일부터 적용됩니다
-          </p>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-slate-400">변경 적용 시점</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setApplyMode("tomorrow")}
+                className={`rounded px-3 py-2 text-xs transition-colors ${
+                  applyMode === "tomorrow"
+                    ? "bg-orange-500 text-white"
+                    : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                }`}
+              >
+                내일부터 반영
+              </button>
+              <button
+                type="button"
+                onClick={() => setApplyMode("today")}
+                className={`rounded px-3 py-2 text-xs transition-colors ${
+                  applyMode === "today"
+                    ? "bg-orange-500 text-white"
+                    : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                }`}
+              >
+                오늘 바로 반영
+              </button>
+            </div>
+            <p
+              className={`text-xs rounded px-3 py-2 ${
+                applyMode === "today"
+                  ? "text-green-400 bg-green-400/10"
+                  : "text-yellow-400 bg-yellow-400/10"
+              }`}
+            >
+              {applyMode === "today"
+                ? "저장 즉시 오늘 스케줄에 반영됩니다"
+                : "변경 사항은 내일부터 적용됩니다"}
+            </p>
+          </div>
         )}
 
         <div className="flex gap-2 justify-end">

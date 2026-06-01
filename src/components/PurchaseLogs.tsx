@@ -25,7 +25,7 @@ export default function PurchaseLogs({ logs = [] }: Props) {
                   {new Date(log.executedAt).toLocaleString("ko-KR")}
                 </p>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {log.amountKrw.toLocaleString()}원 · {log.volumeBtc.toFixed(8)} BTC
+                  {formatPurchaseDetail(log)}
                 </p>
                 {log.errorMessage && (
                   <p className="mt-1 max-w-xs truncate text-xs text-red-300">
@@ -48,4 +48,16 @@ export default function PurchaseLogs({ logs = [] }: Props) {
       )}
     </section>
   );
+}
+
+function formatPurchaseDetail(log: PurchaseLog): string {
+  const volume = Number.isFinite(log.volumeBtc) ? log.volumeBtc : 0;
+  const btcText = `${volume.toFixed(8)} BTC`;
+
+  if (log.status !== "success" || volume <= 0) {
+    return `${log.amountKrw.toLocaleString()}원 · ${btcText}`;
+  }
+
+  const unitPrice = Math.round(log.amountKrw / volume);
+  return `1 BTC = ${unitPrice.toLocaleString()}원일 때, ${log.amountKrw.toLocaleString()}원치 매수 · ${btcText}`;
 }

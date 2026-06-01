@@ -11,7 +11,11 @@ export default function App() {
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100">
       <header className="flex items-center justify-between px-5 py-3 border-b border-slate-700 bg-slate-900">
         <div className="flex items-center gap-2">
-          <span className="text-orange-400 text-xl font-bold">₿</span>
+          <img
+            src="/vitdaily-icon.png"
+            alt=""
+            className="h-6 w-6 rounded-md"
+          />
           <span className="font-semibold text-slate-100 tracking-tight">VitDaily</span>
         </div>
         <nav className="flex gap-1">
@@ -38,7 +42,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="flex-1 overflow-auto">
+      <main className="box-border flex flex-1 justify-center overflow-auto px-6 py-5">
         {activeTab === "settings" ? (
           <Settings />
         ) : (

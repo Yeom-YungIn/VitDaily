@@ -28,6 +28,14 @@ export interface ApiStatus {
   error?: string;
 }
 
+export interface PortfolioSnapshot {
+  btcBalance: number;
+  btcLocked: number;
+  btcTotal: number;
+  btcPriceKrw: number;
+  btcValueKrw: number;
+}
+
 export interface DailySummary {
   totalKrw: number;
   totalBtc: number;

@@ -1,4 +1,6 @@
-use crate::types::{ApiStatus, AppSettings, PurchaseLog, PurchaseStatus, Schedule};
+use crate::types::{
+    ApiStatus, AppSettings, PortfolioSnapshot, PurchaseLog, PurchaseStatus, Schedule,
+};
 use chrono::{Local, Timelike, Utc};
 use keyring::Entry;
 use tauri::{command, AppHandle, Runtime};
@@ -76,6 +78,34 @@ pub async fn test_api_connection() -> Result<ApiStatus, String> {
             error: Some(e),
         }),
     }
+}
+
+#[command]
+pub async fn get_portfolio_snapshot() -> Result<PortfolioSnapshot, String> {
+    let (access_key, secret_key) = get_credentials().map_err(|_| {
+        "업비트 API 키가 저장되어 있지 않습니다. 설정에서 API 키를 먼저 저장해주세요".to_string()
+    })?;
+
+    let accounts = upbit_get_accounts(&access_key, &secret_key).await?;
+    let btc_balance = accounts
+        .iter()
+        .find(|account| account.currency == "BTC")
+        .map(|account| account.balance + account.locked)
+        .unwrap_or(0.0);
+    let btc_locked = accounts
+        .iter()
+        .find(|account| account.currency == "BTC")
+        .map(|account| account.locked)
+        .unwrap_or(0.0);
+    let btc_price_krw = upbit_get_btc_price_krw().await?;
+
+    Ok(PortfolioSnapshot {
+        btc_balance: btc_balance - btc_locked,
+        btc_locked,
+        btc_total: btc_balance,
+        btc_price_krw,
+        btc_value_krw: btc_balance * btc_price_krw,
+    })
 }
 
 // --- Schedules ---
@@ -335,13 +365,34 @@ fn get_credentials() -> anyhow::Result<(String, String)> {
 }
 
 async fn upbit_check_balance(access_key: &str, secret_key: &str) -> Result<(), String> {
+    upbit_get_accounts(access_key, secret_key).await.map(|_| ())
+}
+
+#[derive(Debug)]
+struct UpbitAccount {
+    currency: String,
+    balance: f64,
+    locked: f64,
+}
+
+async fn upbit_get_accounts(
+    access_key: &str,
+    secret_key: &str,
+) -> Result<Vec<UpbitAccount>, String> {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize)]
     struct Claims {
         access_key: String,
         nonce: String,
+    }
+
+    #[derive(Deserialize)]
+    struct AccountResponse {
+        currency: String,
+        balance: String,
+        locked: String,
     }
 
     let nonce = uuid::Uuid::new_v4().to_string();
@@ -351,7 +402,7 @@ async fn upbit_check_balance(access_key: &str, secret_key: &str) -> Result<(), S
     };
 
     let token = encode(
-        &Header::new(Algorithm::HS256),
+        &Header::new(Algorithm::HS512),
         &claims,
         &EncodingKey::from_secret(secret_key.as_bytes()),
     )
@@ -366,11 +417,47 @@ async fn upbit_check_balance(access_key: &str, secret_key: &str) -> Result<(), S
         .map_err(|e| e.to_string())?;
 
     if resp.status().is_success() {
-        Ok(())
+        let accounts = resp
+            .json::<Vec<AccountResponse>>()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|account| UpbitAccount {
+                currency: account.currency,
+                balance: account.balance.parse::<f64>().unwrap_or(0.0),
+                locked: account.locked.parse::<f64>().unwrap_or(0.0),
+            })
+            .collect();
+        Ok(accounts)
     } else {
         let status = resp.status().as_u16();
-        Err(format!("업비트 API 오류: HTTP {status}"))
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("업비트 API 오류: HTTP {status} {body}"))
     }
+}
+
+async fn upbit_get_btc_price_krw() -> Result<f64, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.upbit.com/v1/ticker")
+        .query(&[("markets", "KRW-BTC")])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("업비트 현재가 오류: HTTP {status} {body}"));
+    }
+
+    let value = resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())?;
+    Ok(value
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("trade_price"))
+        .and_then(|price| price.as_f64())
+        .unwrap_or(0.0))
 }
 
 async fn upbit_market_buy(
@@ -400,7 +487,7 @@ async fn upbit_market_buy(
     };
 
     let token = encode(
-        &Header::new(Algorithm::HS256),
+        &Header::new(Algorithm::HS512),
         &claims,
         &EncodingKey::from_secret(secret_key.as_bytes()),
     )

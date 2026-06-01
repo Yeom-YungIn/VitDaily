@@ -107,7 +107,7 @@ export default function Settings() {
   };
 
   return (
-    <div className="p-5 flex flex-col gap-6 max-w-lg">
+    <div className="flex w-full max-w-[390px] flex-col gap-6">
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-3">업비트 API 키</h2>
         <div className="bg-slate-800 rounded-lg p-4 flex flex-col gap-3">
@@ -192,8 +192,8 @@ export default function Settings() {
             }`}
           >
             <span
-              className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                notificationsEnabled ? "translate-x-4" : "translate-x-0.5"
+              className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                notificationsEnabled ? "translate-x-4" : "translate-x-0"
               }`}
             />
           </button>

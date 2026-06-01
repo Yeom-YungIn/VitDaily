@@ -67,6 +67,16 @@ pub struct ApiStatus {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioSnapshot {
+    pub btc_balance: f64,
+    pub btc_locked: f64,
+    pub btc_total: f64,
+    pub btc_price_krw: f64,
+    pub btc_value_krw: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
