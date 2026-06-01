@@ -40,6 +40,25 @@ pub struct PendingChange {
     pub apply_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseLog {
+    pub id: Uuid,
+    pub schedule_id: Uuid,
+    pub executed_at: DateTime<Utc>,
+    pub amount_krw: u64,
+    pub volume_btc: f64,
+    pub status: PurchaseStatus,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PurchaseStatus {
+    Success,
+    Failure,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiStatus {
