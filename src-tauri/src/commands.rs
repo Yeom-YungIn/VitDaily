@@ -1,7 +1,8 @@
 use crate::types::{ApiStatus, PurchaseLog, PurchaseStatus, Schedule};
-use chrono::Utc;
+use chrono::{Local, Timelike, Utc};
 use keyring::Entry;
 use tauri::command;
+use tokio::time::{interval, Duration};
 
 const KEYRING_SERVICE: &str = "vitdaily";
 const KEYRING_ACCESS_KEY: &str = "upbit_access_key";
@@ -119,6 +120,17 @@ pub async fn toggle_schedule(id: String) -> Result<Vec<Schedule>, String> {
     Ok(schedules)
 }
 
+pub async fn run_scheduler() {
+    let mut ticker = interval(Duration::from_secs(30));
+
+    loop {
+        ticker.tick().await;
+        if let Err(error) = execute_due_schedules().await {
+            eprintln!("scheduler error: {error}");
+        }
+    }
+}
+
 // --- Internal helpers ---
 
 fn data_dir() -> std::path::PathBuf {
@@ -174,11 +186,40 @@ fn persist_logs(logs: &[PurchaseLog]) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn execute_due_schedules() -> anyhow::Result<()> {
+    let schedules = load_schedules()?;
+    let now = Local::now();
+    let current_time = format!("{:02}:{:02}", now.hour(), now.minute());
+    let today = now.date_naive();
+    let mut logs = load_logs()?;
+    let mut changed = false;
+
+    for schedule in schedules
+        .iter()
+        .filter(|schedule| schedule.enabled && schedule.time == current_time)
+    {
+        let already_executed = logs.iter().any(|log| {
+            log.schedule_id == schedule.id && log.executed_at.with_timezone(&Local).date_naive() == today
+        });
+
+        if already_executed {
+            continue;
+        }
+
+        logs.push(execute_market_buy(schedule).await);
+        changed = true;
+    }
+
+    if changed {
+        persist_logs(&logs)?;
+    }
+
+    Ok(())
+}
+
 async fn execute_market_buy(schedule: &Schedule) -> PurchaseLog {
     let executed_at = Utc::now();
-    let result = get_credentials()
-        .and_then(|(access_key, secret_key)| Ok((access_key, secret_key)))
-        .map_err(|err| err.to_string());
+    let result = get_credentials().map_err(|err| err.to_string());
 
     let order_result = match result {
         Ok((access_key, secret_key)) => {

@@ -10,6 +10,10 @@ use commands::{
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .setup(|_app| {
+            tauri::async_runtime::spawn(commands::run_scheduler());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             save_api_credentials,
             delete_api_credentials,
