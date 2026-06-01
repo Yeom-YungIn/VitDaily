@@ -33,3 +33,7 @@ export interface DailySummary {
   totalBtc: number;
   date: string;
 }
+
+export interface AppSettings {
+  notificationsEnabled: boolean;
+}

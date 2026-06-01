@@ -66,3 +66,17 @@ pub struct ApiStatus {
     pub has_credentials: bool,
     pub error: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub notifications_enabled: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            notifications_enabled: true,
+        }
+    }
+}
