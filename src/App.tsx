@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Dashboard from "./components/Dashboard";
 import Settings from "./components/Settings";
 
 type Tab = "dashboard" | "settings";
@@ -41,12 +42,7 @@ export default function App() {
         {activeTab === "settings" ? (
           <Settings />
         ) : (
-          <section className="flex h-full flex-col items-center justify-center gap-3 p-5 text-center">
-            <h1 className="text-xl font-semibold text-white">VitDaily</h1>
-            <p className="max-w-xs text-sm text-slate-400">
-              매일 비트코인 자동 매수를 설정하는 데스크탑 앱입니다.
-            </p>
-          </section>
+          <Dashboard />
         )}
       </main>
     </div>

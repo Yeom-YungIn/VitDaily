@@ -1,4 +1,44 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Schedule {
+    pub id: Uuid,
+    pub time: String,
+    pub amount: u64,
+    pub enabled: bool,
+    pub pending_change: Option<PendingChange>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Schedule {
+    pub fn apply_due_pending_change(&mut self, now: DateTime<Utc>) -> bool {
+        let Some(change) = self.pending_change.clone() else {
+            return false;
+        };
+
+        if change.apply_at > now {
+            return false;
+        }
+
+        self.time = change.time;
+        self.amount = change.amount;
+        self.pending_change = None;
+        self.updated_at = now;
+        true
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingChange {
+    pub time: String,
+    pub amount: u64,
+    pub apply_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
