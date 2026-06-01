@@ -1,7 +1,8 @@
-use crate::types::{ApiStatus, PurchaseLog, PurchaseStatus, Schedule};
+use crate::types::{ApiStatus, AppSettings, PurchaseLog, PurchaseStatus, Schedule};
 use chrono::{Local, Timelike, Utc};
 use keyring::Entry;
-use tauri::command;
+use tauri::{command, AppHandle, Runtime};
+use tauri_plugin_notification::NotificationExt;
 use tokio::time::{interval, Duration};
 
 const KEYRING_SERVICE: &str = "vitdaily";
@@ -120,12 +121,28 @@ pub async fn toggle_schedule(id: String) -> Result<Vec<Schedule>, String> {
     Ok(schedules)
 }
 
-pub async fn run_scheduler() {
+// --- Settings ---
+
+#[command]
+pub async fn get_app_settings() -> Result<AppSettings, String> {
+    load_settings().map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn set_notifications_enabled(enabled: bool) -> Result<AppSettings, String> {
+    let settings = AppSettings {
+        notifications_enabled: enabled,
+    };
+    persist_settings(&settings).map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+pub async fn run_scheduler<R: Runtime>(app: AppHandle<R>) {
     let mut ticker = interval(Duration::from_secs(30));
 
     loop {
         ticker.tick().await;
-        if let Err(error) = execute_due_schedules().await {
+        if let Err(error) = execute_due_schedules(&app).await {
             eprintln!("scheduler error: {error}");
         }
     }
@@ -186,7 +203,27 @@ fn persist_logs(logs: &[PurchaseLog]) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn execute_due_schedules() -> anyhow::Result<()> {
+fn load_settings() -> anyhow::Result<AppSettings> {
+    let path = data_dir().join("settings.json");
+    if !path.exists() {
+        return Ok(AppSettings::default());
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+fn persist_settings(settings: &AppSettings) -> anyhow::Result<()> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("settings.json"),
+        serde_json::to_string_pretty(settings)?,
+    )?;
+    Ok(())
+}
+
+async fn execute_due_schedules<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
     let schedules = load_schedules()?;
     let now = Local::now();
     let current_time = format!("{:02}:{:02}", now.hour(), now.minute());
@@ -206,7 +243,9 @@ async fn execute_due_schedules() -> anyhow::Result<()> {
             continue;
         }
 
-        logs.push(execute_market_buy(schedule).await);
+        let log = execute_market_buy(schedule).await;
+        notify_purchase_result(app, &log);
+        logs.push(log);
         changed = true;
     }
 
@@ -215,6 +254,36 @@ async fn execute_due_schedules() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn notify_purchase_result<R: Runtime>(app: &AppHandle<R>, log: &PurchaseLog) {
+    let Ok(settings) = load_settings() else {
+        return;
+    };
+
+    if !settings.notifications_enabled {
+        return;
+    }
+
+    let (title, body) = match log.status {
+        PurchaseStatus::Success => (
+            "VitDaily 매수 성공".to_string(),
+            format!(
+                "{}원 매수 주문 완료 · {:.8} BTC",
+                log.amount_krw, log.volume_btc
+            ),
+        ),
+        PurchaseStatus::Failure => (
+            "VitDaily 매수 실패".to_string(),
+            format!(
+                "{}원 매수 실패 · {}",
+                log.amount_krw,
+                log.error_message.as_deref().unwrap_or("알 수 없는 오류")
+            ),
+        ),
+    };
+
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 async fn execute_market_buy(schedule: &Schedule) -> PurchaseLog {

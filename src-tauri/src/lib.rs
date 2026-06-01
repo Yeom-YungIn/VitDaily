@@ -3,15 +3,16 @@ pub mod types;
 
 use commands::{
     delete_api_credentials, delete_schedule, get_api_status, get_schedules,
-    save_api_credentials, save_schedule, test_api_connection, toggle_schedule,
+    get_app_settings, save_api_credentials, save_schedule, set_notifications_enabled,
+    test_api_connection, toggle_schedule,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
-        .setup(|_app| {
-            tauri::async_runtime::spawn(commands::run_scheduler());
+        .setup(|app| {
+            tauri::async_runtime::spawn(commands::run_scheduler(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -23,6 +24,8 @@ pub fn run() {
             save_schedule,
             delete_schedule,
             toggle_schedule,
+            get_app_settings,
+            set_notifications_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vitdaily");
