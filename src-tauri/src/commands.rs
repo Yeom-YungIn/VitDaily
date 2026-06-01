@@ -1,4 +1,5 @@
-use crate::types::ApiStatus;
+use crate::types::{ApiStatus, Schedule};
+use chrono::Utc;
 use keyring::Entry;
 use tauri::command;
 
@@ -73,6 +74,87 @@ pub async fn test_api_connection() -> Result<ApiStatus, String> {
             error: Some(e),
         }),
     }
+}
+
+// --- Schedules ---
+
+#[command]
+pub async fn get_schedules() -> Result<Vec<Schedule>, String> {
+    load_schedules().map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn save_schedule(schedule: Schedule) -> Result<Vec<Schedule>, String> {
+    if schedule.amount < 5_000 {
+        return Err("최소 주문 금액은 5,000원입니다".to_string());
+    }
+
+    let mut schedules = load_schedules().map_err(|e| e.to_string())?;
+    match schedules.iter().position(|s| s.id == schedule.id) {
+        Some(i) => schedules[i] = schedule,
+        None => schedules.push(schedule),
+    }
+    persist_schedules(&schedules).map_err(|e| e.to_string())?;
+    Ok(schedules)
+}
+
+#[command]
+pub async fn delete_schedule(id: String) -> Result<Vec<Schedule>, String> {
+    let uuid = id.parse::<uuid::Uuid>().map_err(|_| "잘못된 ID".to_string())?;
+    let mut schedules = load_schedules().map_err(|e| e.to_string())?;
+    schedules.retain(|s| s.id != uuid);
+    persist_schedules(&schedules).map_err(|e| e.to_string())?;
+    Ok(schedules)
+}
+
+#[command]
+pub async fn toggle_schedule(id: String) -> Result<Vec<Schedule>, String> {
+    let uuid = id.parse::<uuid::Uuid>().map_err(|_| "잘못된 ID".to_string())?;
+    let mut schedules = load_schedules().map_err(|e| e.to_string())?;
+    if let Some(schedule) = schedules.iter_mut().find(|s| s.id == uuid) {
+        schedule.enabled = !schedule.enabled;
+        schedule.updated_at = Utc::now();
+    }
+    persist_schedules(&schedules).map_err(|e| e.to_string())?;
+    Ok(schedules)
+}
+
+// --- Internal helpers ---
+
+fn data_dir() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("vitdaily")
+}
+
+fn load_schedules() -> anyhow::Result<Vec<Schedule>> {
+    let path = data_dir().join("schedules.json");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let mut schedules: Vec<Schedule> = serde_json::from_str(&content)?;
+    let now = Utc::now();
+    let changed = schedules
+        .iter_mut()
+        .any(|schedule| schedule.apply_due_pending_change(now));
+
+    if changed {
+        persist_schedules(&schedules)?;
+    }
+
+    Ok(schedules)
+}
+
+fn persist_schedules(schedules: &[Schedule]) -> anyhow::Result<()> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("schedules.json"),
+        serde_json::to_string_pretty(schedules)?,
+    )?;
+    Ok(())
 }
 
 async fn upbit_check_balance(access_key: &str, secret_key: &str) -> Result<(), String> {
