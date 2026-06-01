@@ -1,4 +1,4 @@
-use crate::types::{ApiStatus, Schedule};
+use crate::types::{ApiStatus, PurchaseLog, PurchaseStatus, Schedule};
 use chrono::Utc;
 use keyring::Entry;
 use tauri::command;
@@ -157,6 +157,64 @@ fn persist_schedules(schedules: &[Schedule]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn load_logs() -> anyhow::Result<Vec<PurchaseLog>> {
+    let path = data_dir().join("logs.json");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+fn persist_logs(logs: &[PurchaseLog]) -> anyhow::Result<()> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("logs.json"), serde_json::to_string_pretty(logs)?)?;
+    Ok(())
+}
+
+async fn execute_market_buy(schedule: &Schedule) -> PurchaseLog {
+    let executed_at = Utc::now();
+    let result = get_credentials()
+        .and_then(|(access_key, secret_key)| Ok((access_key, secret_key)))
+        .map_err(|err| err.to_string());
+
+    let order_result = match result {
+        Ok((access_key, secret_key)) => {
+            upbit_market_buy(&access_key, &secret_key, schedule.amount).await
+        }
+        Err(err) => Err(err),
+    };
+
+    match order_result {
+        Ok(volume_btc) => PurchaseLog {
+            id: uuid::Uuid::new_v4(),
+            schedule_id: schedule.id,
+            executed_at,
+            amount_krw: schedule.amount,
+            volume_btc,
+            status: PurchaseStatus::Success,
+            error_message: None,
+        },
+        Err(error) => PurchaseLog {
+            id: uuid::Uuid::new_v4(),
+            schedule_id: schedule.id,
+            executed_at,
+            amount_krw: schedule.amount,
+            volume_btc: 0.0,
+            status: PurchaseStatus::Failure,
+            error_message: Some(error),
+        },
+    }
+}
+
+fn get_credentials() -> anyhow::Result<(String, String)> {
+    let access_key = Entry::new(KEYRING_SERVICE, KEYRING_ACCESS_KEY)?.get_password()?;
+    let secret_key = Entry::new(KEYRING_SERVICE, KEYRING_SECRET_KEY)?.get_password()?;
+    Ok((access_key, secret_key))
+}
+
 async fn upbit_check_balance(access_key: &str, secret_key: &str) -> Result<(), String> {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::Serialize;
@@ -194,4 +252,65 @@ async fn upbit_check_balance(access_key: &str, secret_key: &str) -> Result<(), S
         let status = resp.status().as_u16();
         Err(format!("업비트 API 오류: HTTP {status}"))
     }
+}
+
+async fn upbit_market_buy(
+    access_key: &str,
+    secret_key: &str,
+    amount_krw: u64,
+) -> Result<f64, String> {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use serde::Serialize;
+    use sha2::{Digest, Sha512};
+
+    #[derive(Serialize)]
+    struct Claims {
+        access_key: String,
+        nonce: String,
+        query_hash: String,
+        query_hash_alg: String,
+    }
+
+    let query = format!("market=KRW-BTC&side=bid&price={amount_krw}&ord_type=price");
+    let query_hash = hex_string(Sha512::digest(query.as_bytes()).as_slice());
+    let claims = Claims {
+        access_key: access_key.to_string(),
+        nonce: uuid::Uuid::new_v4().to_string(),
+        query_hash,
+        query_hash_alg: "SHA512".to_string(),
+    };
+
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(secret_key.as_bytes()),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://api.upbit.com/v1/orders")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(query)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("업비트 주문 오류: HTTP {status} {body}"));
+    }
+
+    let value = resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())?;
+    Ok(value
+        .get("executed_volume")
+        .and_then(|volume| volume.as_str())
+        .and_then(|volume| volume.parse::<f64>().ok())
+        .unwrap_or(0.0))
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
