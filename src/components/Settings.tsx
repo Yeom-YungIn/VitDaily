@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiStatus } from "../types";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+import type { ApiStatus, AppSettings } from "../types";
 
 type ConnectionStatus = "idle" | "testing" | "ok" | "error";
 
@@ -20,6 +21,10 @@ export default function Settings() {
         setStatus(apiStatus.connected ? "ok" : "idle");
       })
       .catch(() => setStatus("error"));
+
+    invoke<AppSettings>("get_app_settings")
+      .then((settings) => setNotificationsEnabled(settings.notificationsEnabled))
+      .catch(() => setNotificationsEnabled(true));
   }, []);
 
   async function handleTest() {
@@ -64,6 +69,32 @@ export default function Settings() {
       setMessage("저장된 API 키를 삭제했습니다");
     } catch (error) {
       setStatus("error");
+      setMessage(String(error));
+    }
+  }
+
+  async function toggleNotifications() {
+    const nextEnabled = !notificationsEnabled;
+    setMessage("");
+
+    try {
+      if (nextEnabled) {
+        let permissionGranted = await isPermissionGranted();
+        if (!permissionGranted) {
+          permissionGranted = (await requestPermission()) === "granted";
+        }
+
+        if (!permissionGranted) {
+          setMessage("시스템 알림 권한이 허용되지 않았습니다");
+          return;
+        }
+      }
+
+      const settings = await invoke<AppSettings>("set_notifications_enabled", {
+        enabled: nextEnabled,
+      });
+      setNotificationsEnabled(settings.notificationsEnabled);
+    } catch (error) {
       setMessage(String(error));
     }
   }
@@ -155,7 +186,7 @@ export default function Settings() {
             <p className="text-xs text-slate-400 mt-0.5">매수 성공/실패 시 시스템 알림 발송</p>
           </div>
           <button
-            onClick={() => setNotificationsEnabled((v) => !v)}
+            onClick={toggleNotifications}
             className={`relative w-9 h-5 rounded-full transition-colors ${
               notificationsEnabled ? "bg-orange-500" : "bg-slate-600"
             }`}
