@@ -18,7 +18,7 @@ export interface PurchaseLog {
   executedAt: string;
   amountKrw: number;
   volumeBtc: number;
-  status: "success" | "failure";
+  status: "success" | "failure" | "blocked";
   errorMessage?: string;
 }
 
@@ -44,4 +44,74 @@ export interface DailySummary {
 
 export interface AppSettings {
   notificationsEnabled: boolean;
+  notificationPermissionRequested: boolean;
+  globalLiveLocked: boolean;
+}
+
+
+export type SupportedMarket = "KRW-BTC" | "KRW-ETH" | "KRW-XRP";
+
+export type StrategyProfile = "stable" | "conservative" | "aggressive";
+
+export type ThreadStatus =
+  | "draft"
+  | "paper"
+  | "armed"
+  | "live"
+  | "paused"
+  | "stopped"
+  | "completed";
+
+export type ValidationStatus = "missing" | "running" | "pass" | "fail" | "stale";
+
+export interface InvestmentThread {
+  id: string;
+  name: string;
+  market: SupportedMarket;
+  initialBudgetKrw: number;
+  durationDays: number;
+  strategyProfile: StrategyProfile;
+  maxLossPercent: number;
+  dailyTradeCap: number;
+  status: ThreadStatus;
+  validationStatus: ValidationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ThreadValidationResult {
+  id: string;
+  threadId: string;
+  status: ValidationStatus;
+  periodDays: number;
+  market: SupportedMarket;
+  strategyProfile: StrategyProfile;
+  simulatedTrades: number;
+  returnPercent: number;
+  maxDrawdownPercent: number;
+  baselineDcaReturnPercent: number;
+  baselineBuyHoldReturnPercent: number;
+  feesKrw: number;
+  slippagePercent: number;
+  reasons: string[];
+  createdAt: string;
+}
+
+export type SafetyEventType = "blocked" | "warning" | "stopped" | "info";
+
+export interface SafetyEvent {
+  id: string;
+  threadId?: string | null;
+  eventType: SafetyEventType;
+  message: string;
+  createdAt: string;
+}
+
+export interface StrategyProfileInfo {
+  profile: StrategyProfile;
+  title: string;
+  riskLabel: string;
+  tradeFrequency: string;
+  indicators: string[];
+  summary: string;
 }
