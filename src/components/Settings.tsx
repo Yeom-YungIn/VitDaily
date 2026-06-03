@@ -10,6 +10,7 @@ export default function Settings() {
   const [secretKey, setSecretKey] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [globalLiveLocked, setGlobalLiveLocked] = useState(true);
   const [showSecret, setShowSecret] = useState(false);
   const [hasCredentials, setHasCredentials] = useState(false);
   const [message, setMessage] = useState("");
@@ -23,8 +24,14 @@ export default function Settings() {
       .catch(() => setStatus("error"));
 
     invoke<AppSettings>("get_app_settings")
-      .then((settings) => setNotificationsEnabled(settings.notificationsEnabled))
-      .catch(() => setNotificationsEnabled(true));
+      .then((settings) => {
+        setNotificationsEnabled(settings.notificationsEnabled);
+        setGlobalLiveLocked(settings.globalLiveLocked);
+      })
+      .catch(() => {
+        setNotificationsEnabled(false);
+        setGlobalLiveLocked(true);
+      });
   }, []);
 
   async function handleTest() {
@@ -78,20 +85,30 @@ export default function Settings() {
     setMessage("");
 
     try {
+      let permissionRequested = false;
+
       if (nextEnabled) {
         let permissionGranted = await isPermissionGranted();
         if (!permissionGranted) {
+          permissionRequested = true;
           permissionGranted = (await requestPermission()) === "granted";
         }
 
         if (!permissionGranted) {
+          await invoke<AppSettings>("set_notifications_enabled", {
+            enabled: false,
+            permissionRequested,
+          });
           setMessage("시스템 알림 권한이 허용되지 않았습니다");
           return;
         }
+
+        permissionRequested = true;
       }
 
       const settings = await invoke<AppSettings>("set_notifications_enabled", {
         enabled: nextEnabled,
+        permissionRequested,
       });
       setNotificationsEnabled(settings.notificationsEnabled);
     } catch (error) {
@@ -197,6 +214,29 @@ export default function Settings() {
               }`}
             />
           </button>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-slate-300 mb-3">Live Trading</h2>
+        <div className="bg-slate-800 rounded-lg p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm text-slate-200">Global Live Lock</p>
+              <p className="mt-0.5 text-xs text-slate-400">
+                {globalLiveLocked
+                  ? "Global Live Lock이 활성화되어 실거래가 잠겨 있습니다."
+                  : "잠금은 해제되어 있지만 Product Foundation 단계에서는 별도 안전 게이트가 실주문을 차단합니다."}
+              </p>
+            </div>
+            <span
+              className={`rounded px-2 py-1 text-xs ${
+                globalLiveLocked ? "bg-slate-700 text-slate-300" : "bg-red-500/10 text-red-300"
+              }`}
+            >
+              {globalLiveLocked ? "Locked" : "Unlocked"}
+            </span>
+          </div>
         </div>
       </section>
 

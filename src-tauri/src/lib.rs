@@ -2,9 +2,11 @@ pub mod commands;
 pub mod types;
 
 use commands::{
-    delete_api_credentials, delete_schedule, get_api_status, get_app_settings,
-    get_portfolio_snapshot, get_purchase_logs, get_schedules, save_api_credentials,
-    save_schedule, set_notifications_enabled, test_api_connection, toggle_schedule,
+    delete_api_credentials, delete_investment_thread, delete_schedule, get_api_status,
+    get_app_settings, get_investment_threads, get_portfolio_snapshot, get_purchase_logs,
+    get_safety_events, get_schedules, get_strategy_profiles, get_supported_markets,
+    save_api_credentials, save_investment_thread, save_schedule, set_notifications_enabled,
+    test_api_connection, toggle_schedule,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +26,12 @@ pub fn run() {
             save_schedule,
             delete_schedule,
             toggle_schedule,
+            get_supported_markets,
+            get_strategy_profiles,
+            get_investment_threads,
+            save_investment_thread,
+            delete_investment_thread,
+            get_safety_events,
             get_app_settings,
             set_notifications_enabled,
             get_portfolio_snapshot,

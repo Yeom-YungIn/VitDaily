@@ -57,6 +57,7 @@ pub struct PurchaseLog {
 pub enum PurchaseStatus {
     Success,
     Failure,
+    Blocked,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -81,12 +82,151 @@ pub struct PortfolioSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub notifications_enabled: bool,
+    #[serde(default)]
+    pub notification_permission_requested: bool,
+    #[serde(default = "default_global_live_locked")]
+    pub global_live_locked: bool,
+}
+
+fn default_global_live_locked() -> bool {
+    true
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            notifications_enabled: true,
+            notifications_enabled: false,
+            notification_permission_requested: false,
+            global_live_locked: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SupportedMarket {
+    #[serde(rename = "KRW-BTC")]
+    KrwBtc,
+    #[serde(rename = "KRW-ETH")]
+    KrwEth,
+    #[serde(rename = "KRW-XRP")]
+    KrwXrp,
+}
+
+impl SupportedMarket {
+    pub fn all() -> Vec<Self> {
+        vec![Self::KrwBtc, Self::KrwEth, Self::KrwXrp]
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StrategyProfile {
+    Stable,
+    Conservative,
+    Aggressive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThreadStatus {
+    Draft,
+    Paper,
+    Armed,
+    Live,
+    Paused,
+    Stopped,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ValidationStatus {
+    Missing,
+    Running,
+    Pass,
+    Fail,
+    Stale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvestmentThread {
+    pub id: Uuid,
+    pub name: String,
+    pub market: SupportedMarket,
+    pub initial_budget_krw: u64,
+    pub duration_days: u32,
+    pub strategy_profile: StrategyProfile,
+    pub max_loss_percent: f64,
+    pub daily_trade_cap: u32,
+    pub status: ThreadStatus,
+    pub validation_status: ValidationStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadValidationResult {
+    pub id: Uuid,
+    pub thread_id: Uuid,
+    pub status: ValidationStatus,
+    pub period_days: u32,
+    pub market: SupportedMarket,
+    pub strategy_profile: StrategyProfile,
+    pub simulated_trades: u32,
+    pub return_percent: f64,
+    pub max_drawdown_percent: f64,
+    pub baseline_dca_return_percent: f64,
+    pub baseline_buy_hold_return_percent: f64,
+    pub fees_krw: u64,
+    pub slippage_percent: f64,
+    pub reasons: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SafetyEventType {
+    Blocked,
+    Warning,
+    Stopped,
+    Info,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafetyEvent {
+    pub id: Uuid,
+    pub thread_id: Option<Uuid>,
+    pub event_type: SafetyEventType,
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyProfileInfo {
+    pub profile: StrategyProfile,
+    pub title: String,
+    pub risk_label: String,
+    pub trade_frequency: String,
+    pub indicators: Vec<String>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageEnvelope<T> {
+    pub schema_version: u32,
+    pub data: T,
+}
+
+impl<T> StorageEnvelope<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            schema_version: 1,
+            data,
         }
     }
 }

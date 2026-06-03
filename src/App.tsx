@@ -1,53 +1,77 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import Dashboard from "./components/Dashboard";
+import Logs from "./components/Logs";
+import Schedules from "./components/Schedules";
 import Settings from "./components/Settings";
+import Strategies from "./components/Strategies";
+import Threads from "./components/Threads";
+import type { AppSettings } from "./types";
 
-type Tab = "dashboard" | "settings";
+type Tab = "overview" | "threads" | "strategies" | "schedules" | "logs" | "settings";
+
+const tabs: Array<{ id: Tab; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "threads", label: "Threads" },
+  { id: "strategies", label: "Strategies" },
+  { id: "schedules", label: "Schedules" },
+  { id: "logs", label: "Logs" },
+  { id: "settings", label: "Settings" },
+];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [globalLiveLocked, setGlobalLiveLocked] = useState(true);
+
+  useEffect(() => {
+    invoke<AppSettings>("get_app_settings")
+      .then((settings) => setGlobalLiveLocked(settings.globalLiveLocked))
+      .catch(() => setGlobalLiveLocked(true));
+  }, []);
 
   return (
-    <div className="flex flex-col h-screen bg-slate-900 text-slate-100">
-      <header className="flex items-center justify-between px-5 py-3 border-b border-slate-700 bg-slate-900">
-        <div className="flex items-center gap-2">
-          <img
-            src="/vitdaily-icon.png"
-            alt=""
-            className="h-6 w-6 rounded-md"
-          />
-          <span className="font-semibold text-slate-100 tracking-tight">VitDaily</span>
+    <div className="flex h-screen flex-col bg-slate-900 text-slate-100">
+      <header className="border-b border-slate-700 bg-slate-900/95 px-5 py-3">
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img src="/vitdaily-icon.png" alt="" className="h-7 w-7 rounded-md" />
+            <div>
+              <span className="block font-semibold tracking-tight text-slate-100">VitDaily</span>
+              <span className="text-[11px] text-slate-500">Local-first Upbit automation dashboard</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="hidden rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-300 sm:block">
+              <span className={`mr-1 inline-block h-2 w-2 rounded-full ${globalLiveLocked ? "bg-slate-500" : "bg-red-400"}`} />
+              Live Lock: {globalLiveLocked ? "Locked" : "Unlocked"}
+            </div>
+            <nav className="flex flex-wrap gap-1">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                    activeTab === tab.id
+                      ? "bg-slate-700 text-white"
+                      : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+          </div>
         </div>
-        <nav className="flex gap-1">
-          <button
-            onClick={() => setActiveTab("dashboard")}
-            className={`px-3 py-1.5 rounded text-sm transition-colors ${
-              activeTab === "dashboard"
-                ? "bg-slate-700 text-white"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            대시보드
-          </button>
-          <button
-            onClick={() => setActiveTab("settings")}
-            className={`px-3 py-1.5 rounded text-sm transition-colors ${
-              activeTab === "settings"
-                ? "bg-slate-700 text-white"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            설정
-          </button>
-        </nav>
       </header>
 
-      <main className="box-border flex flex-1 justify-center overflow-auto px-6 py-5">
-        {activeTab === "settings" ? (
-          <Settings />
-        ) : (
-          <Dashboard />
-        )}
+      <main className="box-border flex flex-1 justify-center overflow-auto px-5 py-5">
+        {activeTab === "overview" && <Dashboard />}
+        {activeTab === "threads" && <Threads />}
+        {activeTab === "strategies" && <Strategies />}
+        {activeTab === "schedules" && <Schedules />}
+        {activeTab === "logs" && <Logs />}
+        {activeTab === "settings" && <Settings />}
       </main>
     </div>
   );

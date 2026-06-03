@@ -2,12 +2,13 @@ import type { PurchaseLog } from "../types";
 
 interface Props {
   logs?: PurchaseLog[];
+  title?: string;
 }
 
-export default function PurchaseLogs({ logs = [] }: Props) {
+export default function PurchaseLogs({ logs = [], title = "최근 매수 내역" }: Props) {
   return (
     <section>
-      <h2 className="text-sm font-semibold text-slate-300 mb-3">최근 매수 내역</h2>
+      <h2 className="text-sm font-semibold text-slate-300 mb-3">{title}</h2>
 
       {logs.length === 0 ? (
         <div className="bg-slate-800 rounded-lg p-6 text-center text-slate-500 text-sm">
@@ -37,10 +38,12 @@ export default function PurchaseLogs({ logs = [] }: Props) {
                 className={`text-xs px-2 py-0.5 rounded ${
                   log.status === "success"
                     ? "bg-green-500/10 text-green-400"
-                    : "bg-red-500/10 text-red-400"
+                    : log.status === "blocked"
+                      ? "bg-yellow-500/10 text-yellow-300"
+                      : "bg-red-500/10 text-red-400"
                 }`}
               >
-                {log.status === "success" ? "성공" : "실패"}
+                {log.status === "success" ? "성공" : log.status === "blocked" ? "차단" : "실패"}
               </span>
             </li>
           ))}
