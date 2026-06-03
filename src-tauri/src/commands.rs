@@ -1,10 +1,13 @@
 use crate::types::{
     ApiStatus, AppSettings, InvestmentThread, PortfolioSnapshot, PurchaseLog, PurchaseStatus,
-    SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile, StrategyProfileInfo,
-    SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus,
+    PortfolioAllocation, PortfolioAnalytics, PortfolioPointSource, PortfolioSummary,
+    PortfolioTimePoint, SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile,
+    StrategyProfileInfo, SupportedMarket, ThreadAnalytics, ThreadStatus, ThreadValidationResult,
+    ValidationStatus,
 };
 use chrono::{Local, NaiveTime, Timelike, Utc};
 use keyring::Entry;
+use std::collections::{BTreeMap, HashMap};
 use tauri::{command, AppHandle, Runtime};
 use tauri_plugin_notification::NotificationExt;
 use tokio::time::{interval, Duration};
@@ -103,6 +106,18 @@ pub async fn get_portfolio_snapshot() -> Result<PortfolioSnapshot, String> {
         btc_price_krw,
         btc_value_krw: btc_balance * btc_price_krw,
     })
+}
+
+#[command]
+pub async fn get_portfolio_analytics() -> Result<PortfolioAnalytics, String> {
+    let logs = load_logs().map_err(|e| e.to_string())?;
+    let threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let validation_results = load_thread_validation_results().map_err(|e| e.to_string())?;
+    let safety_events = load_safety_events().map_err(|e| e.to_string())?;
+    let analytics = build_portfolio_analytics(&logs, &threads, &validation_results, &safety_events);
+
+    persist_portfolio_snapshots(&analytics.time_series).map_err(|e| e.to_string())?;
+    Ok(analytics)
 }
 
 // --- Schedules ---
@@ -446,6 +461,244 @@ fn load_thread_validation_results() -> anyhow::Result<Vec<ThreadValidationResult
 
 fn persist_thread_validation_results(results: &[ThreadValidationResult]) -> anyhow::Result<()> {
     persist_enveloped_vec("thread-validations.json", results)
+}
+
+fn persist_portfolio_snapshots(snapshots: &[PortfolioTimePoint]) -> anyhow::Result<()> {
+    persist_enveloped_vec("portfolio-snapshots.json", snapshots)
+}
+
+fn build_portfolio_analytics(
+    logs: &[PurchaseLog],
+    threads: &[InvestmentThread],
+    validation_results: &[ThreadValidationResult],
+    safety_events: &[SafetyEvent],
+) -> PortfolioAnalytics {
+    let mut time_series = build_local_portfolio_time_series(logs);
+    if time_series.is_empty() {
+        time_series = build_simulated_portfolio_time_series(threads, validation_results);
+    }
+
+    let total_budget_krw = threads.iter().map(|thread| thread.initial_budget_krw).sum();
+    let invested_krw = logs
+        .iter()
+        .filter(|log| matches!(log.status, PurchaseStatus::Success))
+        .map(|log| log.amount_krw)
+        .sum();
+    let current_value_krw = time_series
+        .last()
+        .map(|point| point.estimated_value_krw)
+        .unwrap_or(0);
+    let return_percent = time_series
+        .last()
+        .map(|point| point.return_percent)
+        .unwrap_or(0.0);
+    let max_drawdown_percent = time_series
+        .iter()
+        .map(|point| point.drawdown_percent)
+        .fold(0.0, f64::max);
+    let successful_buys = logs
+        .iter()
+        .filter(|log| matches!(log.status, PurchaseStatus::Success))
+        .count() as u32;
+    let blocked_orders = logs
+        .iter()
+        .filter(|log| matches!(log.status, PurchaseStatus::Blocked))
+        .count() as u32;
+
+    PortfolioAnalytics {
+        summary: PortfolioSummary {
+            total_budget_krw,
+            invested_krw,
+            current_value_krw,
+            return_percent: round2(return_percent),
+            max_drawdown_percent: round2(max_drawdown_percent),
+            successful_buys,
+            blocked_orders,
+            safety_events: safety_events.len() as u32,
+            latest_point_source: time_series.last().map(|point| point.source.clone()),
+        },
+        allocations: build_allocations(threads),
+        threads: build_thread_analytics(threads, validation_results),
+        time_series,
+    }
+}
+
+fn build_local_portfolio_time_series(logs: &[PurchaseLog]) -> Vec<PortfolioTimePoint> {
+    let mut successful_logs: Vec<&PurchaseLog> = logs
+        .iter()
+        .filter(|log| matches!(log.status, PurchaseStatus::Success) && log.volume_btc > 0.0)
+        .collect();
+    successful_logs.sort_by(|a, b| a.executed_at.cmp(&b.executed_at));
+
+    let mut daily: BTreeMap<String, (u64, f64, f64)> = BTreeMap::new();
+    for log in successful_logs {
+        let date = log.executed_at.date_naive().to_string();
+        let unit_price = log.amount_krw as f64 / log.volume_btc;
+        let entry = daily.entry(date).or_insert((0, 0.0, unit_price));
+        entry.0 += log.amount_krw;
+        entry.1 += log.volume_btc;
+        entry.2 = unit_price;
+    }
+
+    let mut invested = 0_u64;
+    let mut btc_total = 0.0;
+    let mut peak_value = 0_u64;
+    let mut points = Vec::with_capacity(daily.len());
+
+    for (date, (daily_invested, daily_btc, unit_price)) in daily {
+        invested += daily_invested;
+        btc_total += daily_btc;
+        let estimated_value = (btc_total * unit_price).round().max(0.0) as u64;
+        peak_value = peak_value.max(estimated_value);
+        points.push(portfolio_point(
+            date,
+            invested,
+            estimated_value,
+            peak_value,
+            PortfolioPointSource::Local,
+        ));
+    }
+
+    points
+}
+
+fn build_simulated_portfolio_time_series(
+    threads: &[InvestmentThread],
+    validation_results: &[ThreadValidationResult],
+) -> Vec<PortfolioTimePoint> {
+    let mut latest_by_thread = latest_validation_by_thread(validation_results);
+    let mut simulated_rows: Vec<(&InvestmentThread, ThreadValidationResult)> = threads
+        .iter()
+        .filter_map(|thread| latest_by_thread.remove(&thread.id).map(|result| (thread, result)))
+        .collect();
+    simulated_rows.sort_by(|a, b| a.1.period_end.cmp(&b.1.period_end));
+
+    let mut invested = 0_u64;
+    let mut estimated_value = 0_u64;
+    let mut peak_value = 0_u64;
+    let mut points = Vec::with_capacity(simulated_rows.len());
+
+    for (thread, result) in simulated_rows {
+        let thread_value =
+            (thread.initial_budget_krw as f64 * (1.0 + result.return_percent / 100.0))
+                .round()
+                .max(0.0) as u64;
+        invested += thread.initial_budget_krw;
+        estimated_value += thread_value;
+        peak_value = peak_value.max(estimated_value);
+        points.push(portfolio_point(
+            result.period_end.date_naive().to_string(),
+            invested,
+            estimated_value,
+            peak_value,
+            PortfolioPointSource::Simulated,
+        ));
+    }
+
+    points
+}
+
+fn portfolio_point(
+    date: String,
+    invested_krw: u64,
+    estimated_value_krw: u64,
+    peak_value_krw: u64,
+    source: PortfolioPointSource,
+) -> PortfolioTimePoint {
+    let return_percent = if invested_krw == 0 {
+        0.0
+    } else {
+        ((estimated_value_krw as f64 - invested_krw as f64) / invested_krw as f64) * 100.0
+    };
+    let drawdown_percent = if peak_value_krw == 0 {
+        0.0
+    } else {
+        ((peak_value_krw as f64 - estimated_value_krw as f64) / peak_value_krw as f64) * 100.0
+    };
+
+    PortfolioTimePoint {
+        date,
+        invested_krw,
+        estimated_value_krw,
+        return_percent: round2(return_percent),
+        drawdown_percent: round2(drawdown_percent),
+        source,
+    }
+}
+
+fn build_allocations(threads: &[InvestmentThread]) -> Vec<PortfolioAllocation> {
+    let total_budget: u64 = threads.iter().map(|thread| thread.initial_budget_krw).sum();
+    SupportedMarket::all()
+        .into_iter()
+        .filter_map(|market| {
+            let budget_krw = threads
+                .iter()
+                .filter(|thread| thread.market == market)
+                .map(|thread| thread.initial_budget_krw)
+                .sum();
+            if budget_krw == 0 {
+                return None;
+            }
+            Some(PortfolioAllocation {
+                market,
+                budget_krw,
+                share_percent: if total_budget == 0 {
+                    0.0
+                } else {
+                    round2((budget_krw as f64 / total_budget as f64) * 100.0)
+                },
+            })
+        })
+        .collect()
+}
+
+fn build_thread_analytics(
+    threads: &[InvestmentThread],
+    validation_results: &[ThreadValidationResult],
+) -> Vec<ThreadAnalytics> {
+    let latest_by_thread = latest_validation_by_thread(validation_results);
+    let mut rows: Vec<ThreadAnalytics> = threads
+        .iter()
+        .map(|thread| {
+            let result = latest_by_thread.get(&thread.id);
+            ThreadAnalytics {
+                thread_id: thread.id,
+                thread_name: thread.name.clone(),
+                market: thread.market.clone(),
+                budget_krw: thread.initial_budget_krw,
+                validation_status: thread.validation_status.clone(),
+                return_percent: result.map(|item| item.return_percent),
+                max_drawdown_percent: result.map(|item| item.max_drawdown_percent),
+                baseline_dca_return_percent: result.map(|item| item.baseline_dca_return_percent),
+                simulated_trades: result.map(|item| item.simulated_trades),
+                updated_at: result
+                    .map(|item| item.created_at)
+                    .unwrap_or(thread.updated_at),
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    rows
+}
+
+fn latest_validation_by_thread(
+    validation_results: &[ThreadValidationResult],
+) -> HashMap<uuid::Uuid, ThreadValidationResult> {
+    let mut latest_by_thread: HashMap<uuid::Uuid, ThreadValidationResult> = HashMap::new();
+    for result in validation_results {
+        let should_replace = latest_by_thread
+            .get(&result.thread_id)
+            .map(|current| result.created_at > current.created_at)
+            .unwrap_or(true);
+        if should_replace {
+            latest_by_thread.insert(result.thread_id, result.clone());
+        }
+    }
+    latest_by_thread
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 fn load_enveloped_vec<T>(file_name: &str) -> anyhow::Result<Vec<T>>
@@ -993,6 +1246,63 @@ mod tests {
         assert!(validate_schedule(&schedule).is_err());
     }
 
+    #[test]
+    fn local_purchase_logs_build_portfolio_time_series() {
+        let schedule_id = uuid::Uuid::new_v4();
+        let logs = vec![
+            sample_purchase_log(schedule_id, "2026-01-01T00:00:00Z", 10_000, 1.0),
+            sample_purchase_log(schedule_id, "2026-01-02T00:00:00Z", 10_000, 1.0),
+        ];
+
+        let analytics = build_portfolio_analytics(&logs, &[], &[], &[]);
+
+        assert_eq!(analytics.time_series.len(), 2);
+        assert_eq!(analytics.summary.invested_krw, 20_000);
+        assert_eq!(analytics.summary.current_value_krw, 20_000);
+        assert_eq!(analytics.summary.successful_buys, 2);
+        assert_eq!(
+            analytics.summary.latest_point_source,
+            Some(PortfolioPointSource::Local)
+        );
+    }
+
+    #[test]
+    fn validation_results_build_simulated_portfolio_when_no_logs_exist() {
+        let now = Utc::now();
+        let thread = sample_thread(now);
+        let result = sample_validation_result(&thread, 12.5, 4.0);
+
+        let analytics = build_portfolio_analytics(&[], &[thread], &[result], &[]);
+
+        assert_eq!(analytics.time_series.len(), 1);
+        assert_eq!(analytics.summary.total_budget_krw, 100_000);
+        assert_eq!(analytics.summary.current_value_krw, 112_500);
+        assert_eq!(analytics.summary.return_percent, 12.5);
+        assert_eq!(analytics.summary.max_drawdown_percent, 0.0);
+        assert_eq!(
+            analytics.summary.latest_point_source,
+            Some(PortfolioPointSource::Simulated)
+        );
+    }
+
+    #[test]
+    fn thread_allocations_match_backend_summary_budget() {
+        let now = Utc::now();
+        let mut btc_thread = sample_thread(now);
+        btc_thread.initial_budget_krw = 80_000;
+        let mut eth_thread = sample_thread(now);
+        eth_thread.id = uuid::Uuid::new_v4();
+        eth_thread.market = SupportedMarket::KrwEth;
+        eth_thread.initial_budget_krw = 20_000;
+
+        let analytics = build_portfolio_analytics(&[], &[btc_thread, eth_thread], &[], &[]);
+
+        assert_eq!(analytics.summary.total_budget_krw, 100_000);
+        assert_eq!(analytics.allocations.len(), 2);
+        assert_eq!(analytics.allocations[0].share_percent, 80.0);
+        assert_eq!(analytics.allocations[1].share_percent, 20.0);
+    }
+
     fn sample_thread(now: chrono::DateTime<Utc>) -> InvestmentThread {
         InvestmentThread {
             id: uuid::Uuid::new_v4(),
@@ -1007,6 +1317,57 @@ mod tests {
             validation_status: ValidationStatus::Missing,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    fn sample_purchase_log(
+        schedule_id: uuid::Uuid,
+        executed_at: &str,
+        amount_krw: u64,
+        volume_btc: f64,
+    ) -> PurchaseLog {
+        PurchaseLog {
+            id: uuid::Uuid::new_v4(),
+            schedule_id,
+            executed_at: executed_at.parse().expect("valid timestamp"),
+            amount_krw,
+            volume_btc,
+            status: PurchaseStatus::Success,
+            error_message: None,
+        }
+    }
+
+    fn sample_validation_result(
+        thread: &InvestmentThread,
+        return_percent: f64,
+        max_drawdown_percent: f64,
+    ) -> ThreadValidationResult {
+        let now = Utc::now();
+        ThreadValidationResult {
+            id: uuid::Uuid::new_v4(),
+            thread_id: thread.id,
+            status: ValidationStatus::Pass,
+            period_days: 365,
+            period_start: now - chrono::Duration::days(365),
+            period_end: now,
+            market: thread.market.clone(),
+            strategy_profile: thread.strategy_profile.clone(),
+            simulated_trades: 12,
+            return_percent,
+            max_drawdown_percent,
+            baseline_dca_return_percent: return_percent - 1.0,
+            baseline_dca_max_drawdown_percent: max_drawdown_percent + 1.0,
+            baseline_buy_hold_return_percent: return_percent - 2.0,
+            baseline_buy_hold_max_drawdown_percent: max_drawdown_percent + 2.0,
+            recent_90d_return_percent: return_percent / 2.0,
+            recent_90d_dca_return_percent: return_percent / 3.0,
+            fees_krw: 100,
+            fee_percent: 0.05,
+            slippage_percent: 0.05,
+            doubled_slippage_return_percent: return_percent - 0.5,
+            reasons: vec!["테스트".to_string()],
+            assumptions: vec!["테스트 가정".to_string()],
+            created_at: now,
         }
     }
 }

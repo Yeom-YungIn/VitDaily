@@ -36,6 +36,55 @@ export interface PortfolioSnapshot {
   btcValueKrw: number;
 }
 
+export type PortfolioPointSource = "local" | "simulated";
+
+export interface PortfolioTimePoint {
+  date: string;
+  investedKrw: number;
+  estimatedValueKrw: number;
+  returnPercent: number;
+  drawdownPercent: number;
+  source: PortfolioPointSource;
+}
+
+export interface PortfolioAllocation {
+  market: SupportedMarket;
+  budgetKrw: number;
+  sharePercent: number;
+}
+
+export interface PortfolioSummary {
+  totalBudgetKrw: number;
+  investedKrw: number;
+  currentValueKrw: number;
+  returnPercent: number;
+  maxDrawdownPercent: number;
+  successfulBuys: number;
+  blockedOrders: number;
+  safetyEvents: number;
+  latestPointSource?: PortfolioPointSource | null;
+}
+
+export interface ThreadAnalytics {
+  threadId: string;
+  threadName: string;
+  market: SupportedMarket;
+  budgetKrw: number;
+  validationStatus: ValidationStatus;
+  returnPercent?: number | null;
+  maxDrawdownPercent?: number | null;
+  baselineDcaReturnPercent?: number | null;
+  simulatedTrades?: number | null;
+  updatedAt: string;
+}
+
+export interface PortfolioAnalytics {
+  summary: PortfolioSummary;
+  timeSeries: PortfolioTimePoint[];
+  allocations: PortfolioAllocation[];
+  threads: ThreadAnalytics[];
+}
+
 export interface DailySummary {
   totalKrw: number;
   totalBtc: number;

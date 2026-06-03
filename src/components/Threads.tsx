@@ -331,6 +331,7 @@ function ThreadDetail({
             </div>
             <ValidationBadge status={validationResult.status} />
           </div>
+          <ValidationChart result={validationResult} />
           <div className="mt-4 grid gap-3 md:grid-cols-4">
             <Metric label="전략 수익률" value={formatPercent(validationResult.returnPercent)} />
             <Metric label="최대 낙폭" value={formatPercent(validationResult.maxDrawdownPercent)} tone="danger" />
@@ -411,6 +412,39 @@ function ResultList({ title, items }: { title: string; items: string[] }) {
           <li key={item}>- {item}</li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function ValidationChart({ result }: { result: ThreadValidationResult }) {
+  const rows = [
+    { label: "Strategy", value: result.returnPercent, color: "bg-orange-400" },
+    { label: "DCA", value: result.baselineDcaReturnPercent, color: "bg-blue-400" },
+    { label: "Buy/Hold", value: result.baselineBuyHoldReturnPercent, color: "bg-green-400" },
+    { label: "2x Slippage", value: result.doubledSlippageReturnPercent, color: "bg-yellow-400" },
+  ];
+  const maxAbs = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
+
+  return (
+    <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950/40 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h4 className="text-xs font-semibold text-slate-300">성과 비교</h4>
+        <span className="text-[11px] text-slate-500">낙폭 {formatPercent(result.maxDrawdownPercent)}</span>
+      </div>
+      <div className="flex flex-col gap-3">
+        {rows.map((row) => {
+          const width = Math.max((Math.abs(row.value) / maxAbs) * 100, 4);
+          return (
+            <div key={row.label} className="grid grid-cols-[88px_1fr_64px] items-center gap-3 text-xs">
+              <span className="text-slate-400">{row.label}</span>
+              <div className="h-2 rounded bg-slate-800">
+                <div className={`h-2 rounded ${row.color}`} style={{ width: `${width}%`, opacity: row.value < 0 ? 0.55 : 1 }} />
+              </div>
+              <span className={row.value >= 0 ? "text-green-300" : "text-red-300"}>{formatPercent(row.value)}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
