@@ -15,6 +15,7 @@ export interface Schedule {
 export interface PurchaseLog {
   id: string;
   scheduleId: string;
+  threadId?: string | null;
   executedAt: string;
   amountKrw: number;
   volumeBtc: number;
@@ -136,6 +137,44 @@ export type ThreadStatus =
 
 export type ValidationStatus = "missing" | "running" | "pass" | "fail" | "stale";
 
+export type LiveOrderFinalConfirmationStatus = "missing" | "confirmed";
+
+export type LiveOrderGateSource = "legacy_schedule" | "investment_thread";
+
+export type LiveOrderGateBlockReason =
+  | "global_live_locked"
+  | "final_confirmation_missing"
+  | "live_mode_not_enabled"
+  | "daily_trade_cap_exceeded"
+  | "max_loss_exceeded"
+  | "supported_market_required"
+  | "validation_missing"
+  | "validation_not_passed"
+  | "legacy_schedule_not_migrated"
+  | "settings_unavailable"
+  | "audit_data_unavailable";
+
+export interface LiveOrderGateCheck {
+  source: LiveOrderGateSource;
+  threadId?: string | null;
+  relatedScheduleId?: string | null;
+  market: SupportedMarket;
+  amountKrw: number;
+  finalConfirmationStatus: LiveOrderFinalConfirmationStatus;
+  dailyTradeCount: number;
+  dailyTradeCap: number;
+  maxLossPercent?: number | null;
+  latestMaxDrawdownPercent?: number | null;
+  checkedAt: string;
+}
+
+export interface LiveOrderGateDecision {
+  allowed: boolean;
+  check: LiveOrderGateCheck;
+  blockReasons: LiveOrderGateBlockReason[];
+  reason: string;
+}
+
 export interface InvestmentThread {
   id: string;
   name: string;
@@ -147,6 +186,7 @@ export interface InvestmentThread {
   dailyTradeCap: number;
   status: ThreadStatus;
   validationStatus: ValidationStatus;
+  finalConfirmationStatus?: LiveOrderFinalConfirmationStatus;
   createdAt: string;
   updatedAt: string;
 }

@@ -45,6 +45,8 @@ pub struct PendingChange {
 pub struct PurchaseLog {
     pub id: Uuid,
     pub schedule_id: Uuid,
+    #[serde(default)]
+    pub thread_id: Option<Uuid>,
     pub executed_at: DateTime<Utc>,
     pub amount_krw: u64,
     pub volume_btc: f64,
@@ -281,6 +283,67 @@ pub enum ValidationStatus {
     Stale,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveOrderFinalConfirmationStatus {
+    Missing,
+    Confirmed,
+}
+
+impl Default for LiveOrderFinalConfirmationStatus {
+    fn default() -> Self {
+        Self::Missing
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveOrderGateSource {
+    LegacySchedule,
+    InvestmentThread,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveOrderGateBlockReason {
+    GlobalLiveLocked,
+    FinalConfirmationMissing,
+    LiveModeNotEnabled,
+    DailyTradeCapExceeded,
+    MaxLossExceeded,
+    SupportedMarketRequired,
+    ValidationMissing,
+    ValidationNotPassed,
+    LegacyScheduleNotMigrated,
+    SettingsUnavailable,
+    AuditDataUnavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveOrderGateCheck {
+    pub source: LiveOrderGateSource,
+    pub thread_id: Option<Uuid>,
+    pub related_schedule_id: Option<Uuid>,
+    pub market: SupportedMarket,
+    pub amount_krw: u64,
+    pub final_confirmation_status: LiveOrderFinalConfirmationStatus,
+    pub daily_trade_count: u32,
+    pub daily_trade_cap: u32,
+    pub max_loss_percent: Option<f64>,
+    pub latest_max_drawdown_percent: Option<f64>,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveOrderGateDecision {
+    pub allowed: bool,
+    pub check: LiveOrderGateCheck,
+    pub block_reasons: Vec<LiveOrderGateBlockReason>,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvestmentThread {
@@ -294,6 +357,8 @@ pub struct InvestmentThread {
     pub daily_trade_cap: u32,
     pub status: ThreadStatus,
     pub validation_status: ValidationStatus,
+    #[serde(default)]
+    pub final_confirmation_status: LiveOrderFinalConfirmationStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

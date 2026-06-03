@@ -1,9 +1,11 @@
 use crate::types::{
-    ApiStatus, AppSettings, AuditCategory, ExecutionMode, InvestmentThread, PortfolioAllocation,
-    PortfolioAnalytics, PortfolioPointSource, PortfolioSnapshot, PortfolioSummary,
-    PortfolioTimePoint, PurchaseLog, PurchaseLogAction, PurchaseLogSource, PurchaseStatus,
-    SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile, StrategyProfileInfo,
-    SupportedMarket, ThreadAnalytics, ThreadStatus, ThreadValidationResult, ValidationStatus,
+    ApiStatus, AppSettings, AuditCategory, ExecutionMode, InvestmentThread,
+    LiveOrderFinalConfirmationStatus, LiveOrderGateBlockReason, LiveOrderGateCheck,
+    LiveOrderGateDecision, LiveOrderGateSource, PortfolioAllocation, PortfolioAnalytics,
+    PortfolioPointSource, PortfolioSnapshot, PortfolioSummary, PortfolioTimePoint, PurchaseLog,
+    PurchaseLogAction, PurchaseLogSource, PurchaseStatus, SafetyEvent, SafetyEventType, Schedule,
+    StorageEnvelope, StrategyProfile, StrategyProfileInfo, SupportedMarket, ThreadAnalytics,
+    ThreadStatus, ThreadValidationResult, ValidationStatus,
 };
 use chrono::{Local, NaiveTime, Timelike, Utc};
 use keyring::Entry;
@@ -15,6 +17,7 @@ use tokio::time::{interval, Duration};
 const KEYRING_SERVICE: &str = "vitdaily";
 const KEYRING_ACCESS_KEY: &str = "upbit_access_key";
 const KEYRING_SECRET_KEY: &str = "upbit_secret_key";
+const DEFAULT_DAILY_TRADE_CAP: u32 = 10;
 
 // --- API Credentials ---
 
@@ -802,6 +805,7 @@ fn merge_investment_thread(
             incoming.updated_at = now;
             incoming.status = existing.status.clone();
             incoming.validation_status = existing.validation_status.clone();
+            incoming.final_confirmation_status = LiveOrderFinalConfirmationStatus::Missing;
 
             if matches!(existing.status, ThreadStatus::Armed | ThreadStatus::Live) {
                 incoming.status = ThreadStatus::Draft;
@@ -817,6 +821,7 @@ fn merge_investment_thread(
             incoming.updated_at = now;
             incoming.status = ThreadStatus::Draft;
             incoming.validation_status = ValidationStatus::Missing;
+            incoming.final_confirmation_status = LiveOrderFinalConfirmationStatus::Missing;
             incoming
         }
     }
@@ -951,77 +956,392 @@ fn notify_purchase_result<R: Runtime>(app: &AppHandle<R>, log: &PurchaseLog) {
 }
 
 fn reconcile_legacy_schedule_order(schedule: &Schedule) -> PurchaseLog {
-    let executed_at = Utc::now();
-    let gate = evaluate_legacy_schedule_live_gate();
-    let safety_event_id = record_safety_event(
-        None,
-        SafetyEventDraft {
-            event_type: SafetyEventType::Blocked,
-            category: AuditCategory::SafetyGate,
-            source: Some("legacy_schedule".to_string()),
-            related_schedule_id: Some(schedule.id),
-            reason: Some(gate.reason.clone()),
-        },
-        format!(
-            "레거시 DCA 스케줄 {}의 {}원 실거래 주문 차단 · {}",
-            schedule.id, schedule.amount, gate.reason
-        ),
-    )
-    .ok();
+    let gate = evaluate_live_order_gate(LiveOrderGateInput::legacy_schedule(schedule));
+    let safety_event_id = record_live_order_gate_block_event(&gate).ok();
 
-    build_legacy_schedule_blocked_log(schedule, executed_at, gate, safety_event_id)
+    build_live_order_blocked_log(&gate, safety_event_id)
 }
 
-fn build_legacy_schedule_blocked_log(
-    schedule: &Schedule,
-    executed_at: chrono::DateTime<Utc>,
-    gate: LiveOrderGateDecision,
+fn build_live_order_blocked_log(
+    gate: &LiveOrderGateDecision,
     safety_event_id: Option<uuid::Uuid>,
 ) -> PurchaseLog {
+    let title = match gate.check.source {
+        LiveOrderGateSource::LegacySchedule => "레거시 DCA 스케줄 실거래 차단",
+        LiveOrderGateSource::InvestmentThread => "투자 스레드 실거래 차단",
+    };
+
     PurchaseLog {
         id: uuid::Uuid::new_v4(),
-        schedule_id: schedule.id,
-        executed_at,
-        amount_krw: schedule.amount,
+        schedule_id: gate
+            .check
+            .related_schedule_id
+            .unwrap_or_else(uuid::Uuid::nil),
+        thread_id: gate.check.thread_id,
+        executed_at: gate.check.checked_at,
+        amount_krw: gate.check.amount_krw,
         volume_btc: 0.0,
         status: PurchaseStatus::Blocked,
         error_message: Some(gate.reason.clone()),
-        source: PurchaseLogSource::LegacySchedule,
+        source: purchase_log_source_for_gate(&gate.check.source),
         mode: ExecutionMode::Live,
         action: PurchaseLogAction::SafetyCheck,
         audit_category: AuditCategory::BlockedOrder,
-        title: Some("레거시 DCA 스케줄 실거래 차단".to_string()),
-        reason: Some(gate.reason),
+        title: Some(title.to_string()),
+        reason: Some(gate.reason.clone()),
         safety_event_id,
         strategy_signal_reason: None,
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LiveOrderGateDecision {
-    allowed: bool,
-    reason: String,
+#[derive(Debug, Clone)]
+struct LiveOrderGateInput {
+    source: LiveOrderGateSource,
+    thread: Option<InvestmentThread>,
+    related_schedule_id: Option<uuid::Uuid>,
+    market: SupportedMarket,
+    amount_krw: u64,
+    requested_at: chrono::DateTime<Utc>,
 }
 
-fn evaluate_legacy_schedule_live_gate() -> LiveOrderGateDecision {
-    match load_settings() {
-        Ok(settings) if settings.global_live_locked => LiveOrderGateDecision {
-            allowed: false,
-            reason: "Global Live Lock이 잠겨 있어 레거시 스케줄 실주문이 차단되었습니다"
-                .to_string(),
+impl LiveOrderGateInput {
+    fn legacy_schedule(schedule: &Schedule) -> Self {
+        Self {
+            source: LiveOrderGateSource::LegacySchedule,
+            thread: None,
+            related_schedule_id: Some(schedule.id),
+            market: SupportedMarket::KrwBtc,
+            amount_krw: schedule.amount,
+            requested_at: Utc::now(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn investment_thread(
+        thread: &InvestmentThread,
+        amount_krw: u64,
+        requested_at: chrono::DateTime<Utc>,
+    ) -> Self {
+        Self {
+            source: LiveOrderGateSource::InvestmentThread,
+            thread: Some(thread.clone()),
+            related_schedule_id: None,
+            market: thread.market.clone(),
+            amount_krw,
+            requested_at,
+        }
+    }
+}
+
+struct LiveOrderGateData<'a> {
+    settings: Result<&'a AppSettings, String>,
+    logs: Result<&'a [PurchaseLog], String>,
+    validation_results: Result<&'a [ThreadValidationResult], String>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveOrderGateApproval {
+    market: SupportedMarket,
+    amount_krw: u64,
+}
+
+fn evaluate_live_order_gate(input: LiveOrderGateInput) -> LiveOrderGateDecision {
+    let settings = load_settings();
+    let logs = load_logs();
+    let validation_results = load_thread_validation_results();
+
+    evaluate_live_order_gate_with_data(
+        input,
+        LiveOrderGateData {
+            settings: settings.as_ref().map_err(|error| error.to_string()),
+            logs: logs
+                .as_ref()
+                .map(|items| items.as_slice())
+                .map_err(|error| error.to_string()),
+            validation_results: validation_results
+                .as_ref()
+                .map(|items| items.as_slice())
+                .map_err(|error| error.to_string()),
         },
-        Ok(_) => LiveOrderGateDecision {
-            allowed: false,
-            reason:
-                "레거시 DCA 스케줄은 아직 공유 Live Order Gate로 마이그레이션되지 않아 실주문이 차단되었습니다"
-                    .to_string(),
+    )
+}
+
+fn evaluate_live_order_gate_with_data(
+    input: LiveOrderGateInput,
+    data: LiveOrderGateData<'_>,
+) -> LiveOrderGateDecision {
+    let thread_id = input.thread.as_ref().map(|thread| thread.id);
+    let final_confirmation_status = input
+        .thread
+        .as_ref()
+        .map(|thread| thread.final_confirmation_status.clone())
+        .unwrap_or_default();
+    let daily_trade_cap = input
+        .thread
+        .as_ref()
+        .map(|thread| thread.daily_trade_cap)
+        .unwrap_or(DEFAULT_DAILY_TRADE_CAP);
+
+    let mut block_reasons = Vec::new();
+    match data.settings {
+        Ok(settings) if settings.global_live_locked => {
+            block_reasons.push(LiveOrderGateBlockReason::GlobalLiveLocked);
+        }
+        Ok(_) => {}
+        Err(_) => block_reasons.push(LiveOrderGateBlockReason::SettingsUnavailable),
+    }
+
+    if !SupportedMarket::all().contains(&input.market) {
+        block_reasons.push(LiveOrderGateBlockReason::SupportedMarketRequired);
+    }
+
+    let logs = match data.logs {
+        Ok(logs) => logs,
+        Err(_) => {
+            block_reasons.push(LiveOrderGateBlockReason::AuditDataUnavailable);
+            &[]
+        }
+    };
+    let daily_trade_count = live_daily_trade_count(
+        logs,
+        &input.source,
+        thread_id,
+        input.related_schedule_id,
+        input.requested_at,
+    );
+    if daily_trade_count >= daily_trade_cap {
+        block_reasons.push(LiveOrderGateBlockReason::DailyTradeCapExceeded);
+    }
+
+    let mut latest_max_drawdown_percent = None;
+    match input.source {
+        LiveOrderGateSource::LegacySchedule => {
+            block_reasons.push(LiveOrderGateBlockReason::LegacyScheduleNotMigrated);
+            block_reasons.push(LiveOrderGateBlockReason::FinalConfirmationMissing);
+        }
+        LiveOrderGateSource::InvestmentThread => {
+            let Some(thread) = input.thread.as_ref() else {
+                block_reasons.push(LiveOrderGateBlockReason::LiveModeNotEnabled);
+                block_reasons.push(LiveOrderGateBlockReason::FinalConfirmationMissing);
+                block_reasons.push(LiveOrderGateBlockReason::ValidationMissing);
+                let check = build_live_order_gate_check(
+                    &input,
+                    final_confirmation_status,
+                    daily_trade_count,
+                    daily_trade_cap,
+                    None,
+                    latest_max_drawdown_percent,
+                );
+                return live_order_gate_decision(check, block_reasons);
+            };
+
+            if !matches!(thread.status, ThreadStatus::Live) {
+                block_reasons.push(LiveOrderGateBlockReason::LiveModeNotEnabled);
+            }
+
+            if thread.final_confirmation_status != LiveOrderFinalConfirmationStatus::Confirmed {
+                block_reasons.push(LiveOrderGateBlockReason::FinalConfirmationMissing);
+            }
+
+            match data.validation_results {
+                Ok(results) => {
+                    if let Some(result) = latest_validation_for_thread(thread.id, results) {
+                        latest_max_drawdown_percent = Some(result.max_drawdown_percent);
+                        if result.status != ValidationStatus::Pass
+                            || thread.validation_status != ValidationStatus::Pass
+                        {
+                            block_reasons.push(LiveOrderGateBlockReason::ValidationNotPassed);
+                        }
+                        if result.max_drawdown_percent > thread.max_loss_percent {
+                            block_reasons.push(LiveOrderGateBlockReason::MaxLossExceeded);
+                        }
+                    } else {
+                        block_reasons.push(LiveOrderGateBlockReason::ValidationMissing);
+                    }
+                }
+                Err(_) => block_reasons.push(LiveOrderGateBlockReason::AuditDataUnavailable),
+            }
+        }
+    }
+
+    let check = build_live_order_gate_check(
+        &input,
+        final_confirmation_status,
+        daily_trade_count,
+        daily_trade_cap,
+        input.thread.as_ref().map(|thread| thread.max_loss_percent),
+        latest_max_drawdown_percent,
+    );
+
+    live_order_gate_decision(check, block_reasons)
+}
+
+fn build_live_order_gate_check(
+    input: &LiveOrderGateInput,
+    final_confirmation_status: LiveOrderFinalConfirmationStatus,
+    daily_trade_count: u32,
+    daily_trade_cap: u32,
+    max_loss_percent: Option<f64>,
+    latest_max_drawdown_percent: Option<f64>,
+) -> LiveOrderGateCheck {
+    LiveOrderGateCheck {
+        source: input.source.clone(),
+        thread_id: input.thread.as_ref().map(|thread| thread.id),
+        related_schedule_id: input.related_schedule_id,
+        market: input.market.clone(),
+        amount_krw: input.amount_krw,
+        final_confirmation_status,
+        daily_trade_count,
+        daily_trade_cap,
+        max_loss_percent,
+        latest_max_drawdown_percent,
+        checked_at: input.requested_at,
+    }
+}
+
+fn live_order_gate_decision(
+    check: LiveOrderGateCheck,
+    mut block_reasons: Vec<LiveOrderGateBlockReason>,
+) -> LiveOrderGateDecision {
+    block_reasons.sort_by_key(|reason| live_order_block_reason_rank(reason));
+    block_reasons.dedup();
+    let allowed = block_reasons.is_empty();
+    let reason = if allowed {
+        "공유 Live Order Gate를 통과했습니다".to_string()
+    } else {
+        block_reasons
+            .iter()
+            .map(live_order_block_reason_text)
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+
+    LiveOrderGateDecision {
+        allowed,
+        check,
+        block_reasons,
+        reason,
+    }
+}
+
+fn live_order_block_reason_rank(reason: &LiveOrderGateBlockReason) -> u8 {
+    match reason {
+        LiveOrderGateBlockReason::SettingsUnavailable => 0,
+        LiveOrderGateBlockReason::GlobalLiveLocked => 1,
+        LiveOrderGateBlockReason::LegacyScheduleNotMigrated => 2,
+        LiveOrderGateBlockReason::LiveModeNotEnabled => 3,
+        LiveOrderGateBlockReason::FinalConfirmationMissing => 4,
+        LiveOrderGateBlockReason::ValidationMissing => 5,
+        LiveOrderGateBlockReason::ValidationNotPassed => 6,
+        LiveOrderGateBlockReason::MaxLossExceeded => 7,
+        LiveOrderGateBlockReason::DailyTradeCapExceeded => 8,
+        LiveOrderGateBlockReason::SupportedMarketRequired => 9,
+        LiveOrderGateBlockReason::AuditDataUnavailable => 10,
+    }
+}
+
+fn live_order_block_reason_text(reason: &LiveOrderGateBlockReason) -> &'static str {
+    match reason {
+        LiveOrderGateBlockReason::GlobalLiveLocked => {
+            "Global Live Lock이 잠겨 있어 실주문이 차단되었습니다"
+        }
+        LiveOrderGateBlockReason::FinalConfirmationMissing => "최종 확인이 필요합니다",
+        LiveOrderGateBlockReason::LiveModeNotEnabled => "스레드가 실거래 상태가 아닙니다",
+        LiveOrderGateBlockReason::DailyTradeCapExceeded => "일일 거래 한도에 도달했습니다",
+        LiveOrderGateBlockReason::MaxLossExceeded => "최대 손실률 기준을 초과했습니다",
+        LiveOrderGateBlockReason::SupportedMarketRequired => "지원하지 않는 마켓입니다",
+        LiveOrderGateBlockReason::ValidationMissing => "통과한 백테스트 검증 결과가 없습니다",
+        LiveOrderGateBlockReason::ValidationNotPassed => "백테스트 검증 상태가 통과가 아닙니다",
+        LiveOrderGateBlockReason::LegacyScheduleNotMigrated => {
+            "레거시 DCA 스케줄은 아직 공유 Live Order Gate로 마이그레이션되지 않았습니다"
+        }
+        LiveOrderGateBlockReason::SettingsUnavailable => {
+            "설정 로드 실패로 안전 기본값을 적용했습니다"
+        }
+        LiveOrderGateBlockReason::AuditDataUnavailable => {
+            "거래/검증 감사 데이터 로드 실패로 안전 기본값을 적용했습니다"
+        }
+    }
+}
+
+fn live_daily_trade_count(
+    logs: &[PurchaseLog],
+    source: &LiveOrderGateSource,
+    thread_id: Option<uuid::Uuid>,
+    related_schedule_id: Option<uuid::Uuid>,
+    requested_at: chrono::DateTime<Utc>,
+) -> u32 {
+    let requested_day = requested_at.with_timezone(&Local).date_naive();
+    logs.iter()
+        .filter(|log| {
+            log.status == PurchaseStatus::Success
+                && log.mode == ExecutionMode::Live
+                && log.action == PurchaseLogAction::MarketBuy
+                && log.source == purchase_log_source_for_gate(source)
+                && log.executed_at.with_timezone(&Local).date_naive() == requested_day
+        })
+        .filter(|log| match source {
+            LiveOrderGateSource::InvestmentThread => thread_id == log.thread_id,
+            LiveOrderGateSource::LegacySchedule => related_schedule_id == Some(log.schedule_id),
+        })
+        .count() as u32
+}
+
+fn latest_validation_for_thread(
+    thread_id: uuid::Uuid,
+    results: &[ThreadValidationResult],
+) -> Option<&ThreadValidationResult> {
+    results
+        .iter()
+        .filter(|result| result.thread_id == thread_id)
+        .max_by(|left, right| left.created_at.cmp(&right.created_at))
+}
+
+#[allow(dead_code)]
+fn live_order_approval_from_gate(gate: &LiveOrderGateDecision) -> Option<LiveOrderGateApproval> {
+    gate.allowed.then(|| LiveOrderGateApproval {
+        market: gate.check.market.clone(),
+        amount_krw: gate.check.amount_krw,
+    })
+}
+
+fn record_live_order_gate_block_event(gate: &LiveOrderGateDecision) -> anyhow::Result<uuid::Uuid> {
+    record_safety_event(
+        gate.check.thread_id,
+        SafetyEventDraft {
+            event_type: SafetyEventType::Blocked,
+            category: AuditCategory::SafetyGate,
+            source: Some(live_order_gate_source_value(&gate.check.source).to_string()),
+            related_schedule_id: gate.check.related_schedule_id,
+            reason: Some(gate.reason.clone()),
         },
-        Err(error) => LiveOrderGateDecision {
-            allowed: false,
-            reason: format!(
-                "설정 로드 실패로 안전 기본값을 적용해 레거시 스케줄 실주문이 차단되었습니다: {error}"
-            ),
-        },
+        format!(
+            "{} {}원 실거래 주문 차단 · {}",
+            live_order_gate_source_label(&gate.check.source),
+            gate.check.amount_krw,
+            gate.reason
+        ),
+    )
+}
+
+fn live_order_gate_source_value(source: &LiveOrderGateSource) -> &'static str {
+    match source {
+        LiveOrderGateSource::LegacySchedule => "legacy_schedule",
+        LiveOrderGateSource::InvestmentThread => "investment_thread",
+    }
+}
+
+fn live_order_gate_source_label(source: &LiveOrderGateSource) -> &'static str {
+    match source {
+        LiveOrderGateSource::LegacySchedule => "레거시 DCA 스케줄",
+        LiveOrderGateSource::InvestmentThread => "투자 스레드",
+    }
+}
+
+fn purchase_log_source_for_gate(source: &LiveOrderGateSource) -> PurchaseLogSource {
+    match source {
+        LiveOrderGateSource::LegacySchedule => PurchaseLogSource::LegacySchedule,
+        LiveOrderGateSource::InvestmentThread => PurchaseLogSource::InvestmentThread,
     }
 }
 
@@ -1134,7 +1454,7 @@ async fn upbit_get_btc_price_krw() -> Result<f64, String> {
 async fn upbit_market_buy(
     access_key: &str,
     secret_key: &str,
-    amount_krw: u64,
+    approval: &LiveOrderGateApproval,
 ) -> Result<f64, String> {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::Serialize;
@@ -1148,7 +1468,11 @@ async fn upbit_market_buy(
         query_hash_alg: String,
     }
 
-    let query = format!("market=KRW-BTC&side=bid&price={amount_krw}&ord_type=price");
+    let query = format!(
+        "market={}&side=bid&price={}&ord_type=price",
+        approval.market.as_upbit_market(),
+        approval.amount_krw
+    );
     let query_hash = hex_string(Sha512::digest(query.as_bytes()).as_slice());
     let claims = Claims {
         access_key: access_key.to_string(),
@@ -1246,11 +1570,16 @@ mod tests {
         let mut incoming = sample_thread(now);
         incoming.status = ThreadStatus::Live;
         incoming.validation_status = ValidationStatus::Pass;
+        incoming.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
 
         let saved = merge_investment_thread(None, incoming, now);
 
         assert_eq!(saved.status, ThreadStatus::Draft);
         assert_eq!(saved.validation_status, ValidationStatus::Missing);
+        assert_eq!(
+            saved.final_confirmation_status,
+            LiveOrderFinalConfirmationStatus::Missing
+        );
     }
 
     #[test]
@@ -1260,18 +1589,53 @@ mod tests {
         let mut existing = sample_thread(created_at);
         existing.status = ThreadStatus::Live;
         existing.validation_status = ValidationStatus::Pass;
+        existing.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
         let mut incoming = existing.clone();
         incoming.name = "편집된 스레드".to_string();
         incoming.status = ThreadStatus::Live;
         incoming.validation_status = ValidationStatus::Pass;
+        incoming.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
 
         let saved = merge_investment_thread(Some(&existing), incoming, now);
 
         assert_eq!(saved.name, "편집된 스레드");
         assert_eq!(saved.status, ThreadStatus::Draft);
         assert_eq!(saved.validation_status, ValidationStatus::Missing);
+        assert_eq!(
+            saved.final_confirmation_status,
+            LiveOrderFinalConfirmationStatus::Missing
+        );
         assert_eq!(saved.created_at, created_at);
         assert_eq!(saved.updated_at, now);
+    }
+
+    #[test]
+    fn old_thread_json_defaults_final_confirmation_to_missing() {
+        let now = Utc::now().to_rfc3339();
+        let json = format!(
+            r#"{{
+                "id":"{}",
+                "name":"테스트 스레드",
+                "market":"KRW-BTC",
+                "initialBudgetKrw":100000,
+                "durationDays":30,
+                "strategyProfile":"conservative",
+                "maxLossPercent":50.0,
+                "dailyTradeCap":10,
+                "status":"draft",
+                "validationStatus":"missing",
+                "createdAt":"{now}",
+                "updatedAt":"{now}"
+            }}"#,
+            uuid::Uuid::new_v4()
+        );
+
+        let thread: InvestmentThread = serde_json::from_str(&json).expect("parse old thread");
+
+        assert_eq!(
+            thread.final_confirmation_status,
+            LiveOrderFinalConfirmationStatus::Missing
+        );
     }
 
     #[test]
@@ -1364,6 +1728,7 @@ mod tests {
             daily_trade_cap: 10,
             status: ThreadStatus::Draft,
             validation_status: ValidationStatus::Missing,
+            final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
             created_at: now,
             updated_at: now,
         }
@@ -1378,6 +1743,7 @@ mod tests {
         PurchaseLog {
             id: uuid::Uuid::new_v4(),
             schedule_id,
+            thread_id: None,
             executed_at: executed_at.parse().expect("valid timestamp"),
             amount_krw,
             volume_btc,
@@ -1406,15 +1772,28 @@ mod tests {
             created_at: now,
             updated_at: now,
         };
-        let gate = LiveOrderGateDecision {
-            allowed: false,
-            reason: "테스트 안전 게이트 차단".to_string(),
-        };
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::LegacySchedule,
+                thread_id: None,
+                related_schedule_id: Some(schedule.id),
+                market: SupportedMarket::KrwBtc,
+                amount_krw: schedule.amount,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
+                daily_trade_count: 0,
+                daily_trade_cap: DEFAULT_DAILY_TRADE_CAP,
+                max_loss_percent: None,
+                latest_max_drawdown_percent: None,
+                checked_at: now,
+            },
+            vec![LiveOrderGateBlockReason::LegacyScheduleNotMigrated],
+        );
         let safety_event_id = uuid::Uuid::new_v4();
 
-        let log = build_legacy_schedule_blocked_log(&schedule, now, gate, Some(safety_event_id));
+        let log = build_live_order_blocked_log(&gate, Some(safety_event_id));
 
         assert_eq!(log.schedule_id, schedule.id);
+        assert_eq!(log.thread_id, None);
         assert_eq!(log.status, PurchaseStatus::Blocked);
         assert_eq!(log.source, PurchaseLogSource::LegacySchedule);
         assert_eq!(log.mode, ExecutionMode::Live);
@@ -1422,8 +1801,194 @@ mod tests {
         assert_eq!(log.audit_category, AuditCategory::BlockedOrder);
         assert_eq!(log.amount_krw, 10_000);
         assert_eq!(log.volume_btc, 0.0);
-        assert!(log.reason.unwrap_or_default().contains("차단"));
+        assert!(log.reason.unwrap_or_default().contains("마이그레이션"));
         assert_eq!(log.safety_event_id, Some(safety_event_id));
+    }
+
+    #[test]
+    fn shared_gate_blocks_legacy_schedule_even_when_global_lock_is_open() {
+        let now = Utc::now();
+        let schedule = Schedule {
+            id: uuid::Uuid::new_v4(),
+            time: "09:00".to_string(),
+            amount: 10_000,
+            enabled: true,
+            pending_change: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = Vec::new();
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::legacy_schedule(&schedule),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::LegacyScheduleNotMigrated));
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::FinalConfirmationMissing));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_blocks_live_thread_without_final_confirmation() {
+        let now = Utc::now();
+        let mut thread = sample_thread(now);
+        thread.status = ThreadStatus::Live;
+        thread.validation_status = ValidationStatus::Pass;
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::FinalConfirmationMissing));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_blocks_live_thread_at_daily_trade_cap() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let settings = unlocked_settings();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+        let logs = (0..thread.daily_trade_cap)
+            .map(|_| sample_thread_purchase_log(&thread, now))
+            .collect::<Vec<_>>();
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert_eq!(gate.check.daily_trade_count, thread.daily_trade_cap);
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::DailyTradeCapExceeded));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_blocks_live_thread_when_validation_exceeds_max_loss() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, -18.0, 60.0)];
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert_eq!(gate.check.max_loss_percent, Some(50.0));
+        assert_eq!(gate.check.latest_max_drawdown_percent, Some(60.0));
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::MaxLossExceeded));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_returns_approval_only_after_all_live_thread_checks_pass() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        let approval = live_order_approval_from_gate(&gate).expect("gate approval");
+
+        assert!(gate.allowed);
+        assert!(gate.block_reasons.is_empty());
+        assert_eq!(approval.market, SupportedMarket::KrwBtc);
+        assert_eq!(approval.amount_krw, 20_000);
+    }
+
+    #[test]
+    fn unsupported_market_is_rejected_before_thread_can_reach_gate() {
+        let parsed = serde_json::from_str::<SupportedMarket>(r#""KRW-DOGE""#);
+
+        assert!(parsed.is_err());
+    }
+
+    fn unlocked_settings() -> AppSettings {
+        AppSettings {
+            notifications_enabled: false,
+            notification_permission_requested: false,
+            global_live_locked: false,
+        }
+    }
+
+    fn confirmed_live_thread(now: chrono::DateTime<Utc>) -> InvestmentThread {
+        let mut thread = sample_thread(now);
+        thread.status = ThreadStatus::Live;
+        thread.validation_status = ValidationStatus::Pass;
+        thread.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
+        thread
+    }
+
+    fn sample_thread_purchase_log(
+        thread: &InvestmentThread,
+        executed_at: chrono::DateTime<Utc>,
+    ) -> PurchaseLog {
+        PurchaseLog {
+            id: uuid::Uuid::new_v4(),
+            schedule_id: uuid::Uuid::nil(),
+            thread_id: Some(thread.id),
+            executed_at,
+            amount_krw: 20_000,
+            volume_btc: 0.0001,
+            status: PurchaseStatus::Success,
+            error_message: None,
+            source: PurchaseLogSource::InvestmentThread,
+            mode: ExecutionMode::Live,
+            action: PurchaseLogAction::MarketBuy,
+            audit_category: AuditCategory::Trade,
+            title: Some("스레드 시장가 매수".to_string()),
+            reason: None,
+            safety_event_id: None,
+            strategy_signal_reason: Some("테스트 신호".to_string()),
+        }
     }
 
     fn sample_validation_result(

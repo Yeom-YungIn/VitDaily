@@ -1110,6 +1110,7 @@ mod tests {
             daily_trade_cap: 10,
             status: crate::types::ThreadStatus::Draft,
             validation_status: ValidationStatus::Missing,
+            final_confirmation_status: crate::types::LiveOrderFinalConfirmationStatus::Missing,
             created_at: now,
             updated_at: now,
         }
