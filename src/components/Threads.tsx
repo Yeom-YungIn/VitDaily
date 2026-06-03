@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { InvestmentThread, StrategyProfile, SupportedMarket, ThreadStatus, ValidationStatus } from "../types";
+import type { InvestmentThread, StrategyProfile, SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
 
 const markets: SupportedMarket[] = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
 const strategies: Array<{ value: StrategyProfile; label: string; description: string }> = [
@@ -14,7 +14,9 @@ export default function Threads() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<InvestmentThread | null>(null);
+  const [validationResults, setValidationResults] = useState<ThreadValidationResult[]>([]);
   const [error, setError] = useState("");
+  const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
 
   useEffect(() => {
     loadThreads();
@@ -26,6 +28,7 @@ export default function Threads() {
       const result = await invoke<InvestmentThread[]>("get_investment_threads");
       setThreads(result);
       setSelectedId((current) => current ?? result[0]?.id ?? null);
+      setValidationResults(await invoke<ThreadValidationResult[]>("get_thread_validation_results"));
     } catch (err) {
       setError(String(err));
     }
@@ -51,6 +54,22 @@ export default function Threads() {
       setSelectedId(result[0]?.id ?? null);
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function handleRunBacktest(thread: InvestmentThread) {
+    setError("");
+    setRunningThreadId(thread.id);
+    try {
+      const result = await invoke<ThreadValidationResult>("run_thread_backtest", { threadId: thread.id });
+      setValidationResults((current) => [result, ...current.filter((item) => item.threadId !== thread.id)]);
+      setThreads((current) =>
+        current.map((item) => item.id === thread.id ? { ...item, validationStatus: result.status, updatedAt: new Date().toISOString() } : item),
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setRunningThreadId(null);
     }
   }
 
@@ -115,7 +134,14 @@ export default function Threads() {
         )}
       </section>
 
-      <ThreadDetail thread={selected} onEdit={(thread) => { setEditTarget(thread); setShowForm(true); }} onDelete={handleDelete} />
+      <ThreadDetail
+        thread={selected}
+        validationResult={validationResults.find((result) => result.threadId === selected?.id) ?? null}
+        isRunningBacktest={runningThreadId === selected?.id}
+        onRunBacktest={handleRunBacktest}
+        onEdit={(thread) => { setEditTarget(thread); setShowForm(true); }}
+        onDelete={handleDelete}
+      />
 
       {showForm && <ThreadForm initial={editTarget} onSave={handleSave} onCancel={() => { setShowForm(false); setEditTarget(null); }} />}
     </div>
@@ -225,7 +251,21 @@ function ThreadForm({ initial, onSave, onCancel }: { initial: InvestmentThread |
   );
 }
 
-function ThreadDetail({ thread, onEdit, onDelete }: { thread: InvestmentThread | null; onEdit: (thread: InvestmentThread) => void; onDelete: (id: string) => void }) {
+function ThreadDetail({
+  thread,
+  validationResult,
+  isRunningBacktest,
+  onRunBacktest,
+  onEdit,
+  onDelete,
+}: {
+  thread: InvestmentThread | null;
+  validationResult: ThreadValidationResult | null;
+  isRunningBacktest: boolean;
+  onRunBacktest: (thread: InvestmentThread) => void;
+  onEdit: (thread: InvestmentThread) => void;
+  onDelete: (id: string) => void;
+}) {
   if (!thread) {
     return (
       <section className="rounded-xl border border-slate-700 bg-slate-800/80 p-6">
@@ -262,7 +302,14 @@ function ThreadDetail({ thread, onEdit, onDelete }: { thread: InvestmentThread |
         <div className="rounded-lg bg-slate-900/60 p-4">
           <h3 className="text-sm font-semibold text-slate-200">검증 상태</h3>
           <ValidationBadge status={thread.validationStatus} />
-          <p className="mt-3 text-xs text-slate-400">최근 1년 백테스트와 Paper 검증 패널은 다음 마일스톤에서 연결됩니다.</p>
+          <button
+            onClick={() => onRunBacktest(thread)}
+            disabled={isRunningBacktest}
+            className="mt-4 w-full rounded bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          >
+            {isRunningBacktest ? "백테스트 실행 중..." : "최근 1년 백테스트 실행"}
+          </button>
+          <p className="mt-2 text-xs text-slate-500">Upbit 공개 60분 캔들로 검증하며 실주문은 전송하지 않습니다.</p>
         </div>
         <div className="rounded-lg bg-slate-900/60 p-4">
           <h3 className="text-sm font-semibold text-slate-200">Live 활성화</h3>
@@ -272,6 +319,34 @@ function ThreadDetail({ thread, onEdit, onDelete }: { thread: InvestmentThread |
           <p className="mt-2 text-xs text-slate-500">백테스트 통과, 글로벌 Live Lock, 최종 확인 전에는 활성화할 수 없습니다.</p>
         </div>
       </div>
+
+      {validationResult && (
+        <div className="mt-5 rounded-lg bg-slate-900/60 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-200">백테스트 결과</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                {formatDate(validationResult.periodStart)} - {formatDate(validationResult.periodEnd)}
+              </p>
+            </div>
+            <ValidationBadge status={validationResult.status} />
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-4">
+            <Metric label="전략 수익률" value={formatPercent(validationResult.returnPercent)} />
+            <Metric label="최대 낙폭" value={formatPercent(validationResult.maxDrawdownPercent)} tone="danger" />
+            <Metric label="DCA 기준선" value={formatPercent(validationResult.baselineDcaReturnPercent)} />
+            <Metric label="Buy/Hold" value={formatPercent(validationResult.baselineBuyHoldReturnPercent)} />
+            <Metric label="거래 횟수" value={`${validationResult.simulatedTrades}건`} />
+            <Metric label="수수료" value={`${validationResult.feesKrw.toLocaleString()}원`} />
+            <Metric label="슬리피지" value={`${validationResult.slippagePercent}%`} />
+            <Metric label="최근 90일" value={formatPercent(validationResult.recent90dReturnPercent)} />
+          </div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <ResultList title="판정 사유" items={validationResult.reasons} />
+            <ResultList title="가정" items={validationResult.assumptions} />
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -311,9 +386,31 @@ function ValidationBadge({ status }: { status: ValidationStatus }) {
     fail: "실패",
     stale: "재검증 필요",
   };
-  return <span className="mt-3 inline-flex rounded bg-yellow-500/10 px-2 py-1 text-xs text-yellow-300">{labels[status]}</span>;
+  const color = status === "pass" ? "bg-green-500/10 text-green-300" : status === "fail" ? "bg-red-500/10 text-red-300" : "bg-yellow-500/10 text-yellow-300";
+  return <span className={`mt-3 inline-flex rounded px-2 py-1 text-xs ${color}`}>{labels[status]}</span>;
 }
 
 function strategyLabel(profile: StrategyProfile): string {
   return strategies.find((strategy) => strategy.value === profile)?.label ?? profile;
+}
+
+function formatPercent(value: number): string {
+  return `${value.toFixed(2)}%`;
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleDateString("ko-KR");
+}
+
+function ResultList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-3">
+      <h4 className="text-xs font-semibold text-slate-300">{title}</h4>
+      <ul className="mt-2 space-y-1 text-xs text-slate-400">
+        {items.map((item) => (
+          <li key={item}>- {item}</li>
+        ))}
+      </ul>
+    </div>
+  );
 }

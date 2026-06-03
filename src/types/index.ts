@@ -84,16 +84,25 @@ export interface ThreadValidationResult {
   threadId: string;
   status: ValidationStatus;
   periodDays: number;
+  periodStart: string;
+  periodEnd: string;
   market: SupportedMarket;
   strategyProfile: StrategyProfile;
   simulatedTrades: number;
   returnPercent: number;
   maxDrawdownPercent: number;
   baselineDcaReturnPercent: number;
+  baselineDcaMaxDrawdownPercent: number;
   baselineBuyHoldReturnPercent: number;
+  baselineBuyHoldMaxDrawdownPercent: number;
+  recent90dReturnPercent: number;
+  recent90dDcaReturnPercent: number;
   feesKrw: number;
+  feePercent: number;
   slippagePercent: number;
+  doubledSlippageReturnPercent: number;
   reasons: string[];
+  assumptions: string[];
   createdAt: string;
 }
 

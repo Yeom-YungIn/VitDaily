@@ -1,7 +1,7 @@
 use crate::types::{
     ApiStatus, AppSettings, InvestmentThread, PortfolioSnapshot, PurchaseLog, PurchaseStatus,
     SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile, StrategyProfileInfo,
-    SupportedMarket, ThreadStatus, ValidationStatus,
+    SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus,
 };
 use chrono::{Local, NaiveTime, Timelike, Utc};
 use keyring::Entry;
@@ -235,6 +235,53 @@ pub async fn delete_investment_thread(id: String) -> Result<Vec<InvestmentThread
 }
 
 #[command]
+pub async fn run_thread_backtest(thread_id: String) -> Result<ThreadValidationResult, String> {
+    let uuid = thread_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| "잘못된 스레드 ID".to_string())?;
+    let mut threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter()
+        .find(|thread| thread.id == uuid)
+        .cloned()
+        .ok_or_else(|| "백테스트할 스레드를 찾을 수 없습니다".to_string())?;
+
+    let candles = crate::strategy::fetch_recent_year_hourly_candles(&thread.market).await?;
+    let result = crate::strategy::run_backtest_for_thread(&thread, &candles)?;
+
+    if let Some(saved_thread) = threads.iter_mut().find(|thread| thread.id == uuid) {
+        saved_thread.validation_status = result.status.clone();
+        saved_thread.updated_at = Utc::now();
+    }
+    persist_investment_threads(&threads).map_err(|e| e.to_string())?;
+
+    let mut results = load_thread_validation_results().map_err(|e| e.to_string())?;
+    results.retain(|existing| existing.thread_id != uuid);
+    results.push(result.clone());
+    persist_thread_validation_results(&results).map_err(|e| e.to_string())?;
+
+    let _ = record_safety_event_with_type(
+        Some(uuid),
+        SafetyEventType::Info,
+        format!(
+            "{} {} 백테스트 완료 · 상태 {:?} · 주문 전송 없음",
+            thread.market.as_upbit_market(),
+            strategy_profile_label(&thread.strategy_profile),
+            result.status
+        ),
+    );
+
+    Ok(result)
+}
+
+#[command]
+pub async fn get_thread_validation_results() -> Result<Vec<ThreadValidationResult>, String> {
+    let mut results = load_thread_validation_results().map_err(|e| e.to_string())?;
+    results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(results)
+}
+
+#[command]
 pub async fn get_safety_events() -> Result<Vec<SafetyEvent>, String> {
     let mut events = load_safety_events().map_err(|e| e.to_string())?;
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -393,6 +440,14 @@ fn persist_safety_events(events: &[SafetyEvent]) -> anyhow::Result<()> {
     persist_enveloped_vec("safety-events.json", events)
 }
 
+fn load_thread_validation_results() -> anyhow::Result<Vec<ThreadValidationResult>> {
+    load_enveloped_vec("thread-validations.json")
+}
+
+fn persist_thread_validation_results(results: &[ThreadValidationResult]) -> anyhow::Result<()> {
+    persist_enveloped_vec("thread-validations.json", results)
+}
+
 fn load_enveloped_vec<T>(file_name: &str) -> anyhow::Result<Vec<T>>
 where
     T: serde::de::DeserializeOwned,
@@ -522,15 +577,31 @@ fn validate_schedule_values(time: &str, amount: u64) -> Result<(), String> {
 }
 
 fn record_safety_event(thread_id: Option<uuid::Uuid>, message: String) -> anyhow::Result<()> {
+    record_safety_event_with_type(thread_id, SafetyEventType::Blocked, message)
+}
+
+fn record_safety_event_with_type(
+    thread_id: Option<uuid::Uuid>,
+    event_type: SafetyEventType,
+    message: String,
+) -> anyhow::Result<()> {
     let mut events = load_safety_events()?;
     events.push(SafetyEvent {
         id: uuid::Uuid::new_v4(),
         thread_id,
-        event_type: SafetyEventType::Blocked,
+        event_type,
         message,
         created_at: Utc::now(),
     });
     persist_safety_events(&events)
+}
+
+fn strategy_profile_label(profile: &StrategyProfile) -> &'static str {
+    match profile {
+        StrategyProfile::Stable => "안정적",
+        StrategyProfile::Conservative => "보수적",
+        StrategyProfile::Aggressive => "공격적",
+    }
 }
 
 async fn execute_due_schedules<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
