@@ -1,5 +1,6 @@
 use crate::types::{
-    InvestmentThread, StrategyProfile, SupportedMarket, ThreadValidationResult, ValidationStatus,
+    InvestmentThread, PaperSignalAction, StrategyProfile, StrategySignalEvaluation,
+    SupportedMarket, ThreadValidationResult, ValidationStatus,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
 use serde::Deserialize;
@@ -88,17 +89,32 @@ impl SupportedMarket {
 pub async fn fetch_recent_year_hourly_candles(
     market: &SupportedMarket,
 ) -> Result<Vec<MarketCandle>, String> {
+    fetch_hourly_candles(market, BACKTEST_DAYS, 50, 200).await
+}
+
+pub async fn fetch_recent_signal_hourly_candles(
+    market: &SupportedMarket,
+) -> Result<Vec<MarketCandle>, String> {
+    fetch_hourly_candles(market, 30, 2, 200).await
+}
+
+async fn fetch_hourly_candles(
+    market: &SupportedMarket,
+    days: u32,
+    max_batches: usize,
+    count: usize,
+) -> Result<Vec<MarketCandle>, String> {
     let client = reqwest::Client::new();
     let mut candles = Vec::new();
     let mut to: Option<String> = None;
-    let cutoff = Utc::now() - Duration::days(BACKTEST_DAYS as i64);
+    let cutoff = Utc::now() - Duration::days(days as i64);
 
-    for _ in 0..50 {
+    for _ in 0..max_batches {
         let mut request = client
             .get("https://api.upbit.com/v1/candles/minutes/60")
             .query(&[
                 ("market", market.as_upbit_market().to_string()),
-                ("count", "200".to_string()),
+                ("count", count.to_string()),
             ]);
         if let Some(to_value) = to.as_ref() {
             request = request.query(&[("to", to_value.clone())]);
@@ -143,11 +159,51 @@ pub async fn fetch_recent_year_hourly_candles(
     candles.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
     if candles.len() < 200 {
         return Err(format!(
-            "백테스트에 필요한 캔들 데이터가 부족합니다: {}개",
+            "전략 평가에 필요한 캔들 데이터가 부족합니다: {}개",
             candles.len()
         ));
     }
     Ok(candles)
+}
+
+pub fn evaluate_latest_signal_for_thread(
+    thread: &InvestmentThread,
+    candles: &[MarketCandle],
+) -> Result<StrategySignalEvaluation, String> {
+    validate_candles(candles)?;
+    let rules = profile_rules(&thread.strategy_profile);
+    let indicators = calculate_indicators(candles);
+    let index = candles.len() - 1;
+    let latest = &candles[index];
+    let evaluated_at = Utc::now();
+
+    let (action, reason) = if should_exit(thread, candles, &indicators, index, rules) {
+        (
+            PaperSignalAction::Sell,
+            format!("Paper 평가: {}", exit_reason(&thread.strategy_profile)),
+        )
+    } else if should_enter(thread, candles, &indicators, index, rules) {
+        (
+            PaperSignalAction::Buy,
+            format!("Paper 평가: {}", entry_reason(&thread.strategy_profile)),
+        )
+    } else {
+        (
+            PaperSignalAction::Hold,
+            "Paper 평가: 진입/청산 조건이 충족되지 않아 대기합니다".to_string(),
+        )
+    };
+
+    Ok(StrategySignalEvaluation {
+        thread_id: thread.id,
+        market: thread.market.clone(),
+        strategy_profile: thread.strategy_profile.clone(),
+        action,
+        reason,
+        evaluated_at,
+        candle_timestamp: latest.timestamp,
+        price_krw: latest.trade_price,
+    })
 }
 
 impl UpbitMinuteCandle {

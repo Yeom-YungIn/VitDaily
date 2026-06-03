@@ -29,6 +29,7 @@ export interface PurchaseLog {
   reason?: string | null;
   safetyEventId?: string | null;
   strategySignalReason?: string | null;
+  idempotencyKey?: string | null;
 }
 
 export type PurchaseLogSource = "legacy_schedule" | "investment_thread" | "system";
@@ -173,6 +174,29 @@ export interface LiveOrderGateDecision {
   check: LiveOrderGateCheck;
   blockReasons: LiveOrderGateBlockReason[];
   reason: string;
+}
+
+export type PaperSignalAction = "buy" | "sell" | "hold";
+
+export interface StrategySignalEvaluation {
+  threadId: string;
+  market: SupportedMarket;
+  strategyProfile: StrategyProfile;
+  action: PaperSignalAction;
+  reason: string;
+  evaluatedAt: string;
+  candleTimestamp: string;
+  priceKrw: number;
+}
+
+export interface PaperExecutionResult {
+  threadId: string;
+  signal: StrategySignalEvaluation;
+  liveOrderGate: LiveOrderGateDecision;
+  idempotencyKey: string;
+  duplicate: boolean;
+  log?: PurchaseLog | null;
+  message: string;
 }
 
 export interface InvestmentThread {

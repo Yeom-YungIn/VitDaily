@@ -1,11 +1,12 @@
 use crate::types::{
     ApiStatus, AppSettings, AuditCategory, ExecutionMode, InvestmentThread,
     LiveOrderFinalConfirmationStatus, LiveOrderGateBlockReason, LiveOrderGateCheck,
-    LiveOrderGateDecision, LiveOrderGateSource, PortfolioAllocation, PortfolioAnalytics,
-    PortfolioPointSource, PortfolioSnapshot, PortfolioSummary, PortfolioTimePoint, PurchaseLog,
-    PurchaseLogAction, PurchaseLogSource, PurchaseStatus, SafetyEvent, SafetyEventType, Schedule,
-    StorageEnvelope, StrategyProfile, StrategyProfileInfo, SupportedMarket, ThreadAnalytics,
-    ThreadStatus, ThreadValidationResult, ValidationStatus,
+    LiveOrderGateDecision, LiveOrderGateSource, PaperExecutionResult, PaperSignalAction,
+    PortfolioAllocation, PortfolioAnalytics, PortfolioPointSource, PortfolioSnapshot,
+    PortfolioSummary, PortfolioTimePoint, PurchaseLog, PurchaseLogAction, PurchaseLogSource,
+    PurchaseStatus, SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile,
+    StrategyProfileInfo, StrategySignalEvaluation, SupportedMarket, ThreadAnalytics, ThreadStatus,
+    ThreadValidationResult, ValidationStatus,
 };
 use chrono::{Local, NaiveTime, Timelike, Utc};
 use keyring::Entry;
@@ -292,6 +293,71 @@ pub async fn run_thread_backtest(thread_id: String) -> Result<ThreadValidationRe
             thread.market.as_upbit_market(),
             strategy_profile_label(&thread.strategy_profile),
             result.status
+        ),
+    );
+
+    Ok(result)
+}
+
+#[command]
+pub async fn run_thread_paper_execution(thread_id: String) -> Result<PaperExecutionResult, String> {
+    let uuid = thread_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| "잘못된 스레드 ID".to_string())?;
+    let mut threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter()
+        .find(|thread| thread.id == uuid)
+        .cloned()
+        .ok_or_else(|| "Paper 실행할 스레드를 찾을 수 없습니다".to_string())?;
+
+    if matches!(thread.status, ThreadStatus::Armed | ThreadStatus::Live) {
+        return Err(
+            "Paper 실행 루프는 실거래 준비/실거래 스레드에서 실행할 수 없습니다".to_string(),
+        );
+    }
+
+    let candles = crate::strategy::fetch_recent_signal_hourly_candles(&thread.market).await?;
+    let signal = crate::strategy::evaluate_latest_signal_for_thread(&thread, &candles)?;
+    let requested_at = signal.evaluated_at;
+    let amount_krw = paper_order_amount_krw(&thread);
+    let gate = evaluate_live_order_gate(LiveOrderGateInput::investment_thread(
+        &thread,
+        amount_krw,
+        requested_at,
+    ));
+    let mut logs = load_logs().map_err(|e| e.to_string())?;
+    let result = build_paper_execution_result(&thread, signal, gate, &logs, amount_krw);
+
+    if !result.duplicate {
+        if let Some(log) = result.log.clone() {
+            logs.push(log);
+            persist_logs(&logs).map_err(|e| e.to_string())?;
+        }
+    }
+
+    if let Some(saved_thread) = threads.iter_mut().find(|thread| thread.id == uuid) {
+        if matches!(saved_thread.status, ThreadStatus::Draft) {
+            saved_thread.status = ThreadStatus::Paper;
+        }
+        saved_thread.updated_at = Utc::now();
+    }
+    persist_investment_threads(&threads).map_err(|e| e.to_string())?;
+
+    let _ = record_safety_event(
+        Some(uuid),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::PaperTrade,
+            source: Some("paper_execution_loop".to_string()),
+            related_schedule_id: None,
+            reason: Some(result.message.clone()),
+        },
+        format!(
+            "{} Paper 실행 · {:?} · {}",
+            thread.market.as_upbit_market(),
+            result.signal.action,
+            result.message
         ),
     );
 
@@ -991,7 +1057,120 @@ fn build_live_order_blocked_log(
         reason: Some(gate.reason.clone()),
         safety_event_id,
         strategy_signal_reason: None,
+        idempotency_key: None,
     }
+}
+
+fn build_paper_execution_result(
+    thread: &InvestmentThread,
+    signal: StrategySignalEvaluation,
+    live_order_gate: LiveOrderGateDecision,
+    existing_logs: &[PurchaseLog],
+    amount_krw: u64,
+) -> PaperExecutionResult {
+    let idempotency_key = paper_idempotency_key(thread, &signal, amount_krw);
+    let duplicate_log = existing_logs
+        .iter()
+        .find(|log| log.idempotency_key.as_deref() == Some(idempotency_key.as_str()))
+        .cloned();
+
+    if let Some(log) = duplicate_log {
+        return PaperExecutionResult {
+            thread_id: thread.id,
+            signal,
+            live_order_gate,
+            idempotency_key,
+            duplicate: true,
+            log: Some(log),
+            message: "동일한 Paper tick이 이미 기록되어 새 모의 주문을 만들지 않았습니다"
+                .to_string(),
+        };
+    }
+
+    let log = if signal.action == PaperSignalAction::Buy {
+        Some(build_paper_buy_log(
+            thread,
+            &signal,
+            &live_order_gate,
+            &idempotency_key,
+            amount_krw,
+        ))
+    } else {
+        None
+    };
+    let message = match signal.action {
+        PaperSignalAction::Buy => {
+            "전략 신호가 모의 매수를 생성했고 실제 Upbit 주문은 제출하지 않았습니다"
+        }
+        PaperSignalAction::Sell => {
+            "전략 신호가 모의 청산을 제안했지만 현재 foundation 범위에서는 주문 로그를 생성하지 않습니다"
+        }
+        PaperSignalAction::Hold => "전략 신호가 대기 상태라 모의 주문을 생성하지 않았습니다",
+    }
+    .to_string();
+
+    PaperExecutionResult {
+        thread_id: thread.id,
+        signal,
+        live_order_gate,
+        idempotency_key,
+        duplicate: false,
+        log,
+        message,
+    }
+}
+
+fn build_paper_buy_log(
+    thread: &InvestmentThread,
+    signal: &StrategySignalEvaluation,
+    live_order_gate: &LiveOrderGateDecision,
+    idempotency_key: &str,
+    amount_krw: u64,
+) -> PurchaseLog {
+    let volume = if signal.price_krw <= 0.0 {
+        0.0
+    } else {
+        (amount_krw as f64 * 0.9995) / signal.price_krw
+    };
+
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(thread.id),
+        executed_at: signal.evaluated_at,
+        amount_krw,
+        volume_btc: volume,
+        status: PurchaseStatus::Success,
+        error_message: None,
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Paper,
+        action: PurchaseLogAction::MarketBuy,
+        audit_category: AuditCategory::PaperTrade,
+        title: Some("Paper 모의 매수".to_string()),
+        reason: Some(format!("Live Order Gate 확인: {}", live_order_gate.reason)),
+        safety_event_id: None,
+        strategy_signal_reason: Some(signal.reason.clone()),
+        idempotency_key: Some(idempotency_key.to_string()),
+    }
+}
+
+fn paper_order_amount_krw(thread: &InvestmentThread) -> u64 {
+    let days = thread.duration_days.max(1) as u64;
+    (thread.initial_budget_krw / days).max(5_000)
+}
+
+fn paper_idempotency_key(
+    thread: &InvestmentThread,
+    signal: &StrategySignalEvaluation,
+    amount_krw: u64,
+) -> String {
+    format!(
+        "paper:{}:{}:{:?}:{}",
+        thread.id,
+        signal.candle_timestamp.timestamp(),
+        signal.action,
+        amount_krw
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1757,6 +1936,7 @@ mod tests {
             reason: None,
             safety_event_id: None,
             strategy_signal_reason: None,
+            idempotency_key: None,
         }
     }
 
@@ -1945,6 +2125,99 @@ mod tests {
     }
 
     #[test]
+    fn paper_buy_signal_creates_paper_log_without_live_approval() {
+        let now = Utc::now();
+        let mut thread = sample_thread(now);
+        thread.status = ThreadStatus::Paper;
+        thread.validation_status = ValidationStatus::Pass;
+        let signal = sample_strategy_signal(&thread, PaperSignalAction::Buy, now);
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::InvestmentThread,
+                thread_id: Some(thread.id),
+                related_schedule_id: None,
+                market: thread.market.clone(),
+                amount_krw: 5_000,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
+                daily_trade_count: 0,
+                daily_trade_cap: thread.daily_trade_cap,
+                max_loss_percent: Some(thread.max_loss_percent),
+                latest_max_drawdown_percent: Some(4.0),
+                checked_at: now,
+            },
+            vec![
+                LiveOrderGateBlockReason::GlobalLiveLocked,
+                LiveOrderGateBlockReason::LiveModeNotEnabled,
+            ],
+        );
+
+        let result = build_paper_execution_result(&thread, signal, gate, &[], 5_000);
+        let log = result.log.expect("paper buy log");
+
+        assert!(!result.live_order_gate.allowed);
+        assert!(!result.duplicate);
+        assert_eq!(log.thread_id, Some(thread.id));
+        assert_eq!(log.source, PurchaseLogSource::InvestmentThread);
+        assert_eq!(log.mode, ExecutionMode::Paper);
+        assert_eq!(log.audit_category, AuditCategory::PaperTrade);
+        assert_eq!(log.status, PurchaseStatus::Success);
+        assert_eq!(log.amount_krw, 5_000);
+        assert!(log.volume_btc > 0.0);
+        assert_eq!(
+            log.idempotency_key.as_deref(),
+            Some(result.idempotency_key.as_str())
+        );
+        assert!(log
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Live Order Gate 확인"));
+    }
+
+    #[test]
+    fn duplicate_paper_tick_reuses_existing_log_by_idempotency_key() {
+        let now = Utc::now();
+        let mut thread = sample_thread(now);
+        thread.status = ThreadStatus::Paper;
+        let signal = sample_strategy_signal(&thread, PaperSignalAction::Buy, now);
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::InvestmentThread,
+                thread_id: Some(thread.id),
+                related_schedule_id: None,
+                market: thread.market.clone(),
+                amount_krw: 5_000,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
+                daily_trade_count: 0,
+                daily_trade_cap: thread.daily_trade_cap,
+                max_loss_percent: Some(thread.max_loss_percent),
+                latest_max_drawdown_percent: None,
+                checked_at: now,
+            },
+            vec![LiveOrderGateBlockReason::LiveModeNotEnabled],
+        );
+        let first = build_paper_execution_result(&thread, signal.clone(), gate.clone(), &[], 5_000);
+        let existing = first.log.clone().expect("first log");
+
+        let second =
+            build_paper_execution_result(&thread, signal, gate, &[existing.clone()], 5_000);
+
+        assert!(second.duplicate);
+        assert_eq!(second.idempotency_key, first.idempotency_key);
+        assert_eq!(second.log.expect("existing log").id, existing.id);
+    }
+
+    #[test]
+    fn real_upbit_order_submission_remains_isolated_and_unwired() {
+        let source = include_str!("commands.rs");
+        let order_endpoint = concat!("https://api.upbit.com", "/v1/orders");
+        let market_buy_adapter = concat!("upbit", "_market_buy(");
+
+        assert_eq!(source.matches(order_endpoint).count(), 1);
+        assert_eq!(source.matches(market_buy_adapter).count(), 1);
+    }
+
+    #[test]
     fn unsupported_market_is_rejected_before_thread_can_reach_gate() {
         let parsed = serde_json::from_str::<SupportedMarket>(r#""KRW-DOGE""#);
 
@@ -1988,6 +2261,24 @@ mod tests {
             reason: None,
             safety_event_id: None,
             strategy_signal_reason: Some("테스트 신호".to_string()),
+            idempotency_key: None,
+        }
+    }
+
+    fn sample_strategy_signal(
+        thread: &InvestmentThread,
+        action: PaperSignalAction,
+        now: chrono::DateTime<Utc>,
+    ) -> StrategySignalEvaluation {
+        StrategySignalEvaluation {
+            thread_id: thread.id,
+            market: thread.market.clone(),
+            strategy_profile: thread.strategy_profile.clone(),
+            action,
+            reason: "테스트 Paper 신호".to_string(),
+            evaluated_at: now,
+            candle_timestamp: now - chrono::Duration::minutes(30),
+            price_krw: 10_000_000.0,
         }
     }
 

@@ -34,9 +34,14 @@ export default function PurchaseLogs({ logs = [], title = "최근 매수 내역"
                 <p className="text-xs text-slate-400 mt-0.5">
                   {formatPurchaseDetail(log)}
                 </p>
-                {(log.reason || log.errorMessage || log.strategySignalReason) && (
+                {(log.reason || log.errorMessage) && (
                   <p className="mt-1 max-w-xl text-xs text-red-300">
-                    {log.reason || log.errorMessage || log.strategySignalReason}
+                    {log.reason || log.errorMessage}
+                  </p>
+                )}
+                {log.strategySignalReason && (
+                  <p className="mt-1 max-w-xl text-xs text-cyan-200">
+                    {log.strategySignalReason}
                   </p>
                 )}
               </div>

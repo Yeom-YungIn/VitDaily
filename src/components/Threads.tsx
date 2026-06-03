@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { InvestmentThread, StrategyProfile, SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
+import type { InvestmentThread, PaperExecutionResult, StrategyProfile, SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
 
 const markets: SupportedMarket[] = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
 const strategies: Array<{ value: StrategyProfile; label: string; description: string }> = [
@@ -17,6 +17,8 @@ export default function Threads() {
   const [validationResults, setValidationResults] = useState<ThreadValidationResult[]>([]);
   const [error, setError] = useState("");
   const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
+  const [paperRunningThreadId, setPaperRunningThreadId] = useState<string | null>(null);
+  const [paperResult, setPaperResult] = useState<PaperExecutionResult | null>(null);
 
   useEffect(() => {
     loadThreads();
@@ -70,6 +72,22 @@ export default function Threads() {
       setError(String(err));
     } finally {
       setRunningThreadId(null);
+    }
+  }
+
+  async function handleRunPaper(thread: InvestmentThread) {
+    setError("");
+    setPaperRunningThreadId(thread.id);
+    try {
+      const result = await invoke<PaperExecutionResult>("run_thread_paper_execution", { threadId: thread.id });
+      setPaperResult(result);
+      setThreads((current) =>
+        current.map((item) => item.id === thread.id ? { ...item, status: item.status === "draft" ? "paper" : item.status, updatedAt: new Date().toISOString() } : item),
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setPaperRunningThreadId(null);
     }
   }
 
@@ -137,8 +155,11 @@ export default function Threads() {
       <ThreadDetail
         thread={selected}
         validationResult={validationResults.find((result) => result.threadId === selected?.id) ?? null}
+        paperResult={paperResult?.threadId === selected?.id ? paperResult : null}
         isRunningBacktest={runningThreadId === selected?.id}
+        isRunningPaper={paperRunningThreadId === selected?.id}
         onRunBacktest={handleRunBacktest}
+        onRunPaper={handleRunPaper}
         onEdit={(thread) => { setEditTarget(thread); setShowForm(true); }}
         onDelete={handleDelete}
       />
@@ -254,15 +275,21 @@ function ThreadForm({ initial, onSave, onCancel }: { initial: InvestmentThread |
 function ThreadDetail({
   thread,
   validationResult,
+  paperResult,
   isRunningBacktest,
+  isRunningPaper,
   onRunBacktest,
+  onRunPaper,
   onEdit,
   onDelete,
 }: {
   thread: InvestmentThread | null;
   validationResult: ThreadValidationResult | null;
+  paperResult: PaperExecutionResult | null;
   isRunningBacktest: boolean;
+  isRunningPaper: boolean;
   onRunBacktest: (thread: InvestmentThread) => void;
+  onRunPaper: (thread: InvestmentThread) => void;
   onEdit: (thread: InvestmentThread) => void;
   onDelete: (id: string) => void;
 }) {
@@ -312,13 +339,48 @@ function ThreadDetail({
           <p className="mt-2 text-xs text-slate-500">Upbit 공개 60분 캔들로 검증하며 실주문은 전송하지 않습니다.</p>
         </div>
         <div className="rounded-lg bg-slate-900/60 p-4">
-          <h3 className="text-sm font-semibold text-slate-200">Live 활성화</h3>
-          <button disabled className="mt-3 w-full rounded bg-slate-700 px-4 py-2 text-sm text-slate-400 opacity-70">
-            실거래 활성화 비활성화
+          <h3 className="text-sm font-semibold text-slate-200">Paper 실행</h3>
+          <button
+            onClick={() => onRunPaper(thread)}
+            disabled={isRunningPaper || thread.status === "live" || thread.status === "armed"}
+            className="mt-3 w-full rounded bg-cyan-500 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          >
+            {isRunningPaper ? "Paper 실행 중..." : "전략 신호 Paper 실행"}
           </button>
-          <p className="mt-2 text-xs text-slate-500">백테스트 통과, 글로벌 Live Lock, 최종 확인 전에는 활성화할 수 없습니다.</p>
+          <p className="mt-2 text-xs text-slate-500">API 키 없이 공개 캔들을 평가하고 모의 주문 로그만 남깁니다.</p>
         </div>
       </div>
+
+      <div className="mt-5 rounded-lg bg-slate-900/60 p-4">
+        <h3 className="text-sm font-semibold text-slate-200">Live 활성화</h3>
+        <button disabled className="mt-3 w-full rounded bg-slate-700 px-4 py-2 text-sm text-slate-400 opacity-70">
+            실거래 활성화 비활성화
+        </button>
+        <p className="mt-2 text-xs text-slate-500">백테스트 통과, 글로벌 Live Lock, 최종 확인 전에는 활성화할 수 없습니다.</p>
+      </div>
+
+      {paperResult && (
+        <div className="mt-5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-cyan-100">마지막 Paper 실행</h3>
+              <p className="mt-1 text-xs text-cyan-200/80">{paperResult.message}</p>
+            </div>
+            <span className={`rounded px-2 py-1 text-xs ${paperResult.duplicate ? "bg-yellow-500/10 text-yellow-200" : "bg-blue-500/10 text-blue-200"}`}>
+              {paperResult.duplicate ? "idempotent" : "new tick"}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-4">
+            <Metric label="신호" value={paperActionLabel(paperResult.signal.action)} />
+            <Metric label="평가 가격" value={`${Math.round(paperResult.signal.priceKrw).toLocaleString()}원`} />
+            <Metric label="모의 로그" value={paperResult.log ? "기록됨" : "없음"} />
+            <Metric label="Live Gate" value={paperResult.liveOrderGate.allowed ? "통과" : "차단 확인"} tone={paperResult.liveOrderGate.allowed ? "default" : "danger"} />
+          </div>
+          <p className="mt-3 text-xs text-cyan-100/80">{paperResult.signal.reason}</p>
+          <p className="mt-1 break-all text-[11px] text-slate-400">key: {paperResult.idempotencyKey}</p>
+          <p className="mt-1 text-[11px] text-yellow-200">{paperResult.liveOrderGate.reason}</p>
+        </div>
+      )}
 
       {validationResult && (
         <div className="mt-5 rounded-lg bg-slate-900/60 p-4">
@@ -393,6 +455,12 @@ function ValidationBadge({ status }: { status: ValidationStatus }) {
 
 function strategyLabel(profile: StrategyProfile): string {
   return strategies.find((strategy) => strategy.value === profile)?.label ?? profile;
+}
+
+function paperActionLabel(action: PaperExecutionResult["signal"]["action"]): string {
+  if (action === "buy") return "모의 매수";
+  if (action === "sell") return "모의 청산";
+  return "대기";
 }
 
 function formatPercent(value: number): string {

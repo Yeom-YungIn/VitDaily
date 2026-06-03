@@ -7,8 +7,8 @@ use commands::{
     get_app_settings, get_investment_threads, get_portfolio_analytics, get_portfolio_snapshot,
     get_purchase_logs, get_safety_events, get_schedules, get_strategy_profiles,
     get_supported_markets, get_thread_validation_results, run_thread_backtest,
-    save_api_credentials, save_investment_thread, save_schedule, set_notifications_enabled,
-    test_api_connection, toggle_schedule,
+    run_thread_paper_execution, save_api_credentials, save_investment_thread, save_schedule,
+    set_notifications_enabled, test_api_connection, toggle_schedule,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,6 +34,7 @@ pub fn run() {
             save_investment_thread,
             delete_investment_thread,
             run_thread_backtest,
+            run_thread_paper_execution,
             get_thread_validation_results,
             get_safety_events,
             get_app_settings,

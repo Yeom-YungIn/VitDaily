@@ -68,6 +68,8 @@ pub struct PurchaseLog {
     pub safety_event_id: Option<Uuid>,
     #[serde(default)]
     pub strategy_signal_reason: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -342,6 +344,39 @@ pub struct LiveOrderGateDecision {
     pub check: LiveOrderGateCheck,
     pub block_reasons: Vec<LiveOrderGateBlockReason>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PaperSignalAction {
+    Buy,
+    Sell,
+    Hold,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategySignalEvaluation {
+    pub thread_id: Uuid,
+    pub market: SupportedMarket,
+    pub strategy_profile: StrategyProfile,
+    pub action: PaperSignalAction,
+    pub reason: String,
+    pub evaluated_at: DateTime<Utc>,
+    pub candle_timestamp: DateTime<Utc>,
+    pub price_krw: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperExecutionResult {
+    pub thread_id: Uuid,
+    pub signal: StrategySignalEvaluation,
+    pub live_order_gate: LiveOrderGateDecision,
+    pub idempotency_key: String,
+    pub duplicate: bool,
+    pub log: Option<PurchaseLog>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
