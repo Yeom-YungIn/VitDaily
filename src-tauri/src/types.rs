@@ -50,14 +50,83 @@ pub struct PurchaseLog {
     pub volume_btc: f64,
     pub status: PurchaseStatus,
     pub error_message: Option<String>,
+    #[serde(default = "default_purchase_log_source")]
+    pub source: PurchaseLogSource,
+    #[serde(default = "default_purchase_log_mode")]
+    pub mode: ExecutionMode,
+    #[serde(default = "default_purchase_log_action")]
+    pub action: PurchaseLogAction,
+    #[serde(default)]
+    pub audit_category: AuditCategory,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub safety_event_id: Option<Uuid>,
+    #[serde(default)]
+    pub strategy_signal_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PurchaseStatus {
     Success,
     Failure,
     Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PurchaseLogSource {
+    LegacySchedule,
+    InvestmentThread,
+    System,
+}
+
+fn default_purchase_log_source() -> PurchaseLogSource {
+    PurchaseLogSource::LegacySchedule
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionMode {
+    Live,
+    Paper,
+    System,
+}
+
+fn default_purchase_log_mode() -> ExecutionMode {
+    ExecutionMode::Live
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PurchaseLogAction {
+    MarketBuy,
+    SafetyCheck,
+}
+
+fn default_purchase_log_action() -> PurchaseLogAction {
+    PurchaseLogAction::MarketBuy
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditCategory {
+    Trade,
+    PaperTrade,
+    BlockedOrder,
+    ApiFailure,
+    SafetyGate,
+    Validation,
+    Schedule,
+}
+
+impl Default for AuditCategory {
+    fn default() -> Self {
+        Self::Trade
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -275,6 +344,14 @@ pub struct SafetyEvent {
     pub event_type: SafetyEventType,
     pub message: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub category: AuditCategory,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub related_schedule_id: Option<Uuid>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

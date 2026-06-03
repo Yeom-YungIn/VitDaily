@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { PurchaseLog, SafetyEvent, SafetyEventType } from "../types";
+import type { AuditCategory, PurchaseLog, SafetyEvent, SafetyEventType } from "../types";
 import PurchaseLogs from "./PurchaseLogs";
 
 type EventFilter = "all" | SafetyEventType;
+type LogStatusFilter = "all" | PurchaseLog["status"];
+type CategoryFilter = "all" | AuditCategory;
 
 export default function Logs() {
   const [logs, setLogs] = useState<PurchaseLog[]>([]);
@@ -11,6 +13,8 @@ export default function Logs() {
   const [logsError, setLogsError] = useState("");
   const [eventsError, setEventsError] = useState("");
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
+  const [logStatusFilter, setLogStatusFilter] = useState<LogStatusFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
 
   useEffect(() => {
     invoke<PurchaseLog[]>("get_purchase_logs")
@@ -33,10 +37,17 @@ export default function Logs() {
       });
   }, []);
 
+  const filteredLogs = logs.filter((log) => {
+    const statusMatches = logStatusFilter === "all" || log.status === logStatusFilter;
+    const category = log.auditCategory ?? (log.status === "blocked" ? "blocked_order" : log.status === "failure" ? "api_failure" : "trade");
+    const categoryMatches = categoryFilter === "all" || category === categoryFilter;
+    return statusMatches && categoryMatches;
+  });
   const filteredEvents = eventFilter === "all" ? events : events.filter((event) => event.eventType === eventFilter);
   const blockedOrders = logs.filter((log) => log.status === "blocked").length;
   const failedOrders = logs.filter((log) => log.status === "failure").length;
-  const validationEvents = events.filter((event) => event.message.includes("백테스트") || event.eventType === "info").length;
+  const safetyGateEvents = events.filter((event) => (event.category ?? "safety_gate") === "safety_gate").length;
+  const validationEvents = events.filter((event) => (event.category ?? "") === "validation" || event.message.includes("백테스트") || event.eventType === "info").length;
 
   return (
     <div className="grid w-full max-w-6xl gap-5 lg:grid-cols-[1fr_420px]">
@@ -46,12 +57,34 @@ export default function Logs() {
             주문 로그를 불러오지 못했습니다: {logsError}
           </div>
         )}
-        <div className="mb-4 grid gap-3 sm:grid-cols-3">
+        <div className="mb-4 grid gap-3 sm:grid-cols-4">
           <LogStat label="차단 주문" value={`${blockedOrders}건`} tone="warning" />
           <LogStat label="실패 주문" value={`${failedOrders}건`} tone="danger" />
+          <LogStat label="안전 게이트 이벤트" value={`${safetyGateEvents}건`} />
           <LogStat label="검증/정보 이벤트" value={`${validationEvents}건`} />
         </div>
-        <PurchaseLogs logs={logs} title="주문/스케줄 로그" />
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-slate-300">주문/스케줄 감사 로그</h2>
+          <div className="flex flex-wrap gap-2">
+            <select value={logStatusFilter} onChange={(event) => setLogStatusFilter(event.target.value as LogStatusFilter)} className="input py-1 text-xs">
+              <option value="all">전체 상태</option>
+              <option value="success">성공</option>
+              <option value="blocked">차단</option>
+              <option value="failure">실패</option>
+            </select>
+            <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as CategoryFilter)} className="input py-1 text-xs">
+              <option value="all">전체 분류</option>
+              <option value="trade">Trade</option>
+              <option value="paper_trade">Paper Trade</option>
+              <option value="blocked_order">Blocked Order</option>
+              <option value="api_failure">API Failure</option>
+              <option value="safety_gate">Safety Gate</option>
+              <option value="validation">Validation</option>
+              <option value="schedule">Schedule</option>
+            </select>
+          </div>
+        </div>
+        <PurchaseLogs logs={filteredLogs} title="" />
       </section>
       <section className="rounded-xl border border-slate-700 bg-slate-800/80 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -76,10 +109,17 @@ export default function Logs() {
             {filteredEvents.map((event) => (
               <li key={event.id} className="rounded-lg bg-slate-900/60 px-4 py-3">
                 <div className="flex items-center justify-between gap-2">
-                  <EventBadge type={event.eventType} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <EventBadge type={event.eventType} />
+                    <span className="rounded bg-orange-500/10 px-2 py-0.5 text-[11px] text-orange-300">
+                      {(event.category ?? "safety_gate").replace(/_/g, " ")}
+                    </span>
+                    {event.source && <span className="rounded bg-slate-700 px-2 py-0.5 text-[11px] text-slate-300">{event.source}</span>}
+                  </div>
                   <span className="text-[11px] text-slate-500">{new Date(event.createdAt).toLocaleString("ko-KR")}</span>
                 </div>
                 <p className="mt-2 text-sm text-slate-300">{event.message}</p>
+                {event.reason && <p className="mt-1 text-xs text-yellow-200">{event.reason}</p>}
               </li>
             ))}
           </ul>

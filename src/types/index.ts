@@ -20,7 +20,30 @@ export interface PurchaseLog {
   volumeBtc: number;
   status: "success" | "failure" | "blocked";
   errorMessage?: string;
+  source?: PurchaseLogSource;
+  mode?: ExecutionMode;
+  action?: PurchaseLogAction;
+  auditCategory?: AuditCategory;
+  title?: string | null;
+  reason?: string | null;
+  safetyEventId?: string | null;
+  strategySignalReason?: string | null;
 }
+
+export type PurchaseLogSource = "legacy_schedule" | "investment_thread" | "system";
+
+export type ExecutionMode = "live" | "paper" | "system";
+
+export type PurchaseLogAction = "market_buy" | "safety_check";
+
+export type AuditCategory =
+  | "trade"
+  | "paper_trade"
+  | "blocked_order"
+  | "api_failure"
+  | "safety_gate"
+  | "validation"
+  | "schedule";
 
 export interface ApiStatus {
   connected: boolean;
@@ -163,6 +186,10 @@ export interface SafetyEvent {
   eventType: SafetyEventType;
   message: string;
   createdAt: string;
+  category?: AuditCategory;
+  source?: string | null;
+  relatedScheduleId?: string | null;
+  reason?: string | null;
 }
 
 export interface StrategyProfileInfo {

@@ -1,9 +1,9 @@
 use crate::types::{
-    ApiStatus, AppSettings, InvestmentThread, PortfolioSnapshot, PurchaseLog, PurchaseStatus,
-    PortfolioAllocation, PortfolioAnalytics, PortfolioPointSource, PortfolioSummary,
-    PortfolioTimePoint, SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile,
-    StrategyProfileInfo, SupportedMarket, ThreadAnalytics, ThreadStatus, ThreadValidationResult,
-    ValidationStatus,
+    ApiStatus, AppSettings, AuditCategory, ExecutionMode, InvestmentThread, PortfolioAllocation,
+    PortfolioAnalytics, PortfolioPointSource, PortfolioSnapshot, PortfolioSummary,
+    PortfolioTimePoint, PurchaseLog, PurchaseLogAction, PurchaseLogSource, PurchaseStatus,
+    SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile, StrategyProfileInfo,
+    SupportedMarket, ThreadAnalytics, ThreadStatus, ThreadValidationResult, ValidationStatus,
 };
 use chrono::{Local, NaiveTime, Timelike, Utc};
 use keyring::Entry;
@@ -275,9 +275,15 @@ pub async fn run_thread_backtest(thread_id: String) -> Result<ThreadValidationRe
     results.push(result.clone());
     persist_thread_validation_results(&results).map_err(|e| e.to_string())?;
 
-    let _ = record_safety_event_with_type(
+    let _ = record_safety_event(
         Some(uuid),
-        SafetyEventType::Info,
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::Validation,
+            source: Some("strategy_backtest".to_string()),
+            related_schedule_id: None,
+            reason: Some("백테스트는 주문 전송 없이 검증 결과만 저장합니다".to_string()),
+        },
         format!(
             "{} {} 백테스트 완료 · 상태 {:?} · 주문 전송 없음",
             thread.market.as_upbit_market(),
@@ -569,7 +575,11 @@ fn build_simulated_portfolio_time_series(
     let mut latest_by_thread = latest_validation_by_thread(validation_results);
     let mut simulated_rows: Vec<(&InvestmentThread, ThreadValidationResult)> = threads
         .iter()
-        .filter_map(|thread| latest_by_thread.remove(&thread.id).map(|result| (thread, result)))
+        .filter_map(|thread| {
+            latest_by_thread
+                .remove(&thread.id)
+                .map(|result| (thread, result))
+        })
         .collect();
     simulated_rows.sort_by(|a, b| a.1.period_end.cmp(&b.1.period_end));
 
@@ -579,10 +589,10 @@ fn build_simulated_portfolio_time_series(
     let mut points = Vec::with_capacity(simulated_rows.len());
 
     for (thread, result) in simulated_rows {
-        let thread_value =
-            (thread.initial_budget_krw as f64 * (1.0 + result.return_percent / 100.0))
-                .round()
-                .max(0.0) as u64;
+        let thread_value = (thread.initial_budget_krw as f64
+            * (1.0 + result.return_percent / 100.0))
+            .round()
+            .max(0.0) as u64;
         invested += thread.initial_budget_krw;
         estimated_value += thread_value;
         peak_value = peak_value.max(estimated_value);
@@ -829,24 +839,35 @@ fn validate_schedule_values(time: &str, amount: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn record_safety_event(thread_id: Option<uuid::Uuid>, message: String) -> anyhow::Result<()> {
-    record_safety_event_with_type(thread_id, SafetyEventType::Blocked, message)
+#[derive(Debug, Clone)]
+struct SafetyEventDraft {
+    event_type: SafetyEventType,
+    category: AuditCategory,
+    source: Option<String>,
+    related_schedule_id: Option<uuid::Uuid>,
+    reason: Option<String>,
 }
 
-fn record_safety_event_with_type(
+fn record_safety_event(
     thread_id: Option<uuid::Uuid>,
-    event_type: SafetyEventType,
+    draft: SafetyEventDraft,
     message: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<uuid::Uuid> {
     let mut events = load_safety_events()?;
+    let id = uuid::Uuid::new_v4();
     events.push(SafetyEvent {
-        id: uuid::Uuid::new_v4(),
+        id,
         thread_id,
-        event_type,
+        event_type: draft.event_type,
         message,
         created_at: Utc::now(),
+        category: draft.category,
+        source: draft.source,
+        related_schedule_id: draft.related_schedule_id,
+        reason: draft.reason,
     });
-    persist_safety_events(&events)
+    persist_safety_events(&events)?;
+    Ok(id)
 }
 
 fn strategy_profile_label(profile: &StrategyProfile) -> &'static str {
@@ -878,7 +899,7 @@ async fn execute_due_schedules<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result
             continue;
         }
 
-        let log = execute_market_buy(schedule).await;
+        let log = reconcile_legacy_schedule_order(schedule);
         notify_purchase_result(app, &log);
         logs.push(log);
         changed = true;
@@ -929,49 +950,77 @@ fn notify_purchase_result<R: Runtime>(app: &AppHandle<R>, log: &PurchaseLog) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
-async fn execute_market_buy(schedule: &Schedule) -> PurchaseLog {
+fn reconcile_legacy_schedule_order(schedule: &Schedule) -> PurchaseLog {
     let executed_at = Utc::now();
-    let block_reason = match load_settings() {
-        Ok(settings) if settings.global_live_locked => {
-            "Global Live Lock이 잠겨 있어 스케줄 실주문이 차단되었습니다".to_string()
-        }
-        Ok(_) => "Product Foundation 단계에서는 v1 안전 게이트 적용 전까지 스케줄 실주문이 차단되었습니다"
-            .to_string(),
-        Err(error) => format!(
-            "설정 로드 실패로 안전 기본값을 적용해 스케줄 실주문이 차단되었습니다: {error}"
-        ),
-    };
-    let order_result: Result<f64, String> = Err(block_reason.clone());
-    let _ = record_safety_event(
+    let gate = evaluate_legacy_schedule_live_gate();
+    let safety_event_id = record_safety_event(
         None,
-        format!(
-            "스케줄 {}의 {}원 실주문 차단 · {}",
-            schedule.id, schedule.amount, block_reason
-        ),
-    );
-
-    match order_result {
-        Ok(volume_btc) => PurchaseLog {
-            id: uuid::Uuid::new_v4(),
-            schedule_id: schedule.id,
-            executed_at,
-            amount_krw: schedule.amount,
-            volume_btc,
-            status: PurchaseStatus::Success,
-            error_message: None,
+        SafetyEventDraft {
+            event_type: SafetyEventType::Blocked,
+            category: AuditCategory::SafetyGate,
+            source: Some("legacy_schedule".to_string()),
+            related_schedule_id: Some(schedule.id),
+            reason: Some(gate.reason.clone()),
         },
-        Err(error) => PurchaseLog {
-            id: uuid::Uuid::new_v4(),
-            schedule_id: schedule.id,
-            executed_at,
-            amount_krw: schedule.amount,
-            volume_btc: 0.0,
-            status: if error.contains("차단") || error.contains("안전 게이트") {
-                PurchaseStatus::Blocked
-            } else {
-                PurchaseStatus::Failure
-            },
-            error_message: Some(error),
+        format!(
+            "레거시 DCA 스케줄 {}의 {}원 실거래 주문 차단 · {}",
+            schedule.id, schedule.amount, gate.reason
+        ),
+    )
+    .ok();
+
+    build_legacy_schedule_blocked_log(schedule, executed_at, gate, safety_event_id)
+}
+
+fn build_legacy_schedule_blocked_log(
+    schedule: &Schedule,
+    executed_at: chrono::DateTime<Utc>,
+    gate: LiveOrderGateDecision,
+    safety_event_id: Option<uuid::Uuid>,
+) -> PurchaseLog {
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: schedule.id,
+        executed_at,
+        amount_krw: schedule.amount,
+        volume_btc: 0.0,
+        status: PurchaseStatus::Blocked,
+        error_message: Some(gate.reason.clone()),
+        source: PurchaseLogSource::LegacySchedule,
+        mode: ExecutionMode::Live,
+        action: PurchaseLogAction::SafetyCheck,
+        audit_category: AuditCategory::BlockedOrder,
+        title: Some("레거시 DCA 스케줄 실거래 차단".to_string()),
+        reason: Some(gate.reason),
+        safety_event_id,
+        strategy_signal_reason: None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveOrderGateDecision {
+    allowed: bool,
+    reason: String,
+}
+
+fn evaluate_legacy_schedule_live_gate() -> LiveOrderGateDecision {
+    match load_settings() {
+        Ok(settings) if settings.global_live_locked => LiveOrderGateDecision {
+            allowed: false,
+            reason: "Global Live Lock이 잠겨 있어 레거시 스케줄 실주문이 차단되었습니다"
+                .to_string(),
+        },
+        Ok(_) => LiveOrderGateDecision {
+            allowed: false,
+            reason:
+                "레거시 DCA 스케줄은 아직 공유 Live Order Gate로 마이그레이션되지 않아 실주문이 차단되었습니다"
+                    .to_string(),
+        },
+        Err(error) => LiveOrderGateDecision {
+            allowed: false,
+            reason: format!(
+                "설정 로드 실패로 안전 기본값을 적용해 레거시 스케줄 실주문이 차단되었습니다: {error}"
+            ),
         },
     }
 }
@@ -1334,7 +1383,47 @@ mod tests {
             volume_btc,
             status: PurchaseStatus::Success,
             error_message: None,
+            source: PurchaseLogSource::LegacySchedule,
+            mode: ExecutionMode::Live,
+            action: PurchaseLogAction::MarketBuy,
+            audit_category: AuditCategory::Trade,
+            title: Some("시장가 매수".to_string()),
+            reason: None,
+            safety_event_id: None,
+            strategy_signal_reason: None,
         }
+    }
+
+    #[test]
+    fn legacy_schedule_reconciliation_records_blocked_safety_audit_log() {
+        let now = Utc::now();
+        let schedule = Schedule {
+            id: uuid::Uuid::new_v4(),
+            time: "09:00".to_string(),
+            amount: 10_000,
+            enabled: true,
+            pending_change: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let gate = LiveOrderGateDecision {
+            allowed: false,
+            reason: "테스트 안전 게이트 차단".to_string(),
+        };
+        let safety_event_id = uuid::Uuid::new_v4();
+
+        let log = build_legacy_schedule_blocked_log(&schedule, now, gate, Some(safety_event_id));
+
+        assert_eq!(log.schedule_id, schedule.id);
+        assert_eq!(log.status, PurchaseStatus::Blocked);
+        assert_eq!(log.source, PurchaseLogSource::LegacySchedule);
+        assert_eq!(log.mode, ExecutionMode::Live);
+        assert_eq!(log.action, PurchaseLogAction::SafetyCheck);
+        assert_eq!(log.audit_category, AuditCategory::BlockedOrder);
+        assert_eq!(log.amount_krw, 10_000);
+        assert_eq!(log.volume_btc, 0.0);
+        assert!(log.reason.unwrap_or_default().contains("차단"));
+        assert_eq!(log.safety_event_id, Some(safety_event_id));
     }
 
     fn sample_validation_result(
