@@ -80,6 +80,70 @@ pub struct PortfolioSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PortfolioTimePoint {
+    pub date: String,
+    pub invested_krw: u64,
+    pub estimated_value_krw: u64,
+    pub return_percent: f64,
+    pub drawdown_percent: f64,
+    pub source: PortfolioPointSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PortfolioPointSource {
+    Local,
+    Simulated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioAllocation {
+    pub market: SupportedMarket,
+    pub budget_krw: u64,
+    pub share_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioSummary {
+    pub total_budget_krw: u64,
+    pub invested_krw: u64,
+    pub current_value_krw: u64,
+    pub return_percent: f64,
+    pub max_drawdown_percent: f64,
+    pub successful_buys: u32,
+    pub blocked_orders: u32,
+    pub safety_events: u32,
+    pub latest_point_source: Option<PortfolioPointSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadAnalytics {
+    pub thread_id: Uuid,
+    pub thread_name: String,
+    pub market: SupportedMarket,
+    pub budget_krw: u64,
+    pub validation_status: ValidationStatus,
+    pub return_percent: Option<f64>,
+    pub max_drawdown_percent: Option<f64>,
+    pub baseline_dca_return_percent: Option<f64>,
+    pub simulated_trades: Option<u32>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioAnalytics {
+    pub summary: PortfolioSummary,
+    pub time_series: Vec<PortfolioTimePoint>,
+    pub allocations: Vec<PortfolioAllocation>,
+    pub threads: Vec<ThreadAnalytics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub notifications_enabled: bool,
     #[serde(default)]
