@@ -13,3 +13,9 @@ body {
   -webkit-font-smoothing: antialiased;
   user-select: none;
 }
+
+@layer components {
+  .input {
+    @apply rounded bg-slate-700 px-3 py-2 text-sm text-white outline-none focus:ring-1 focus:ring-orange-500;
+  }
+}

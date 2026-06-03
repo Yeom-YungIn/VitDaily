@@ -10,9 +10,11 @@ interface Props {
 }
 
 export default function ScheduleForm({ initial, onSave, onCancel }: Props) {
-  const [time, setTime] = useState(initial?.time ?? "09:00");
-  const [amount, setAmount] = useState(initial?.amount?.toString() ?? "5000");
-  const [applyMode, setApplyMode] = useState<ApplyMode>("tomorrow");
+  const [time, setTime] = useState(initial?.pendingChange?.time ?? initial?.time ?? "09:00");
+  const [amount, setAmount] = useState(
+    (initial?.pendingChange?.amount ?? initial?.amount)?.toString() ?? "5000"
+  );
+  const [applyMode, setApplyMode] = useState<ApplyMode>(initial ? "tomorrow" : "today");
   const [error, setError] = useState("");
 
   function handleSubmit() {
