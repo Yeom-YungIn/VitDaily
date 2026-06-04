@@ -1664,23 +1664,114 @@ impl LiveOrderGateInput {
             thread: Some(thread.clone()),
             related_schedule_id: None,
             market: thread.market.clone(),
+            intent: None,
             amount_krw,
+            order_preview: None,
+            order_chance: None,
             requested_at,
         }
+    }
+
+    fn with_order_probe(
+        mut self,
+        intent: LiveOrderIntent,
+        order_preview: UpbitOrderPayloadPreview,
+        order_chance: Result<LiveOrderChance, String>,
+    ) -> Self {
+        self.intent = Some(intent);
+        self.order_preview = Some(order_preview);
+        self.order_chance = Some(order_chance);
+        self
     }
 }
 
 struct LiveOrderGateData<'a> {
     settings: Result<&'a AppSettings, String>,
+    credentials_available: Result<bool, String>,
     logs: Result<&'a [PurchaseLog], String>,
     validation_results: Result<&'a [ThreadValidationResult], String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct LiveOrderGateApproval {
     market: SupportedMarket,
     amount_krw: u64,
 }
+
+#[derive(Debug, Clone)]
+struct UpbitOrderRequest {
+    preview: UpbitOrderPayloadPreview,
+    json_body: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+struct LiveMarketBuySubmission {
+    approval: LiveOrderGateApproval,
+    request: UpbitOrderRequest,
+    thread_id: uuid::Uuid,
+    gate_reason: String,
+    submitted_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveMarketSellSubmission {
+    approval: LiveOrderGateApproval,
+    request: UpbitOrderRequest,
+    thread_id: uuid::Uuid,
+    volume: String,
+    policy_reason: Option<String>,
+    gate_reason: String,
+    submitted_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveOrderExecutionReceipt {
+    upbit_uuid: Option<String>,
+    state: String,
+    executed_volume: f64,
+    executed_funds_krw: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveOrderChance {
+    market: SupportedMarket,
+    bid_currency: String,
+    bid_balance: f64,
+    ask_currency: String,
+    ask_balance: f64,
+    order_sides: Vec<String>,
+    order_types: Vec<String>,
+    bid_types: Vec<String>,
+    ask_types: Vec<String>,
+    bid_min_total_krw: Option<u64>,
+    ask_min_total_krw: Option<u64>,
+}
+
+trait LiveOrderExecutor {
+    fn order_chance<'a>(
+        &'a self,
+        access_key: &'a str,
+        secret_key: &'a str,
+        market: &'a SupportedMarket,
+    ) -> Pin<Box<dyn Future<Output = Result<LiveOrderChance, String>> + Send + 'a>>;
+
+    fn market_buy<'a>(
+        &'a self,
+        access_key: &'a str,
+        secret_key: &'a str,
+        submission: &'a LiveMarketBuySubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>>;
+
+    fn market_sell<'a>(
+        &'a self,
+        access_key: &'a str,
+        secret_key: &'a str,
+        submission: &'a LiveMarketSellSubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>>;
+}
+
+struct UpbitLiveOrderExecutor;
 
 fn evaluate_live_order_gate(input: LiveOrderGateInput) -> LiveOrderGateDecision {
     let settings = load_settings();
@@ -1691,6 +1782,7 @@ fn evaluate_live_order_gate(input: LiveOrderGateInput) -> LiveOrderGateDecision 
         input,
         LiveOrderGateData {
             settings: settings.as_ref().map_err(|error| error.to_string()),
+            credentials_available: Ok(get_credentials().is_ok()),
             logs: logs
                 .as_ref()
                 .map(|items| items.as_slice())
@@ -1826,6 +1918,7 @@ fn build_live_order_gate_check(
         thread_id: input.thread.as_ref().map(|thread| thread.id),
         related_schedule_id: input.related_schedule_id,
         market: input.market.clone(),
+        intent: input.intent.clone(),
         amount_krw: input.amount_krw,
         final_confirmation_status,
         daily_trade_count,
@@ -1865,15 +1958,22 @@ fn live_order_block_reason_rank(reason: &LiveOrderGateBlockReason) -> u8 {
     match reason {
         LiveOrderGateBlockReason::SettingsUnavailable => 0,
         LiveOrderGateBlockReason::GlobalLiveLocked => 1,
-        LiveOrderGateBlockReason::LegacyScheduleNotMigrated => 2,
-        LiveOrderGateBlockReason::LiveModeNotEnabled => 3,
-        LiveOrderGateBlockReason::FinalConfirmationMissing => 4,
-        LiveOrderGateBlockReason::ValidationMissing => 5,
-        LiveOrderGateBlockReason::ValidationNotPassed => 6,
-        LiveOrderGateBlockReason::MaxLossExceeded => 7,
-        LiveOrderGateBlockReason::DailyTradeCapExceeded => 8,
-        LiveOrderGateBlockReason::SupportedMarketRequired => 9,
-        LiveOrderGateBlockReason::AuditDataUnavailable => 10,
+        LiveOrderGateBlockReason::CredentialsMissing => 2,
+        LiveOrderGateBlockReason::StrategyLogicNotApproved => 3,
+        LiveOrderGateBlockReason::LegacyScheduleNotMigrated => 4,
+        LiveOrderGateBlockReason::LiveModeNotEnabled => 5,
+        LiveOrderGateBlockReason::FinalConfirmationMissing => 6,
+        LiveOrderGateBlockReason::ValidationMissing => 7,
+        LiveOrderGateBlockReason::ValidationNotPassed => 8,
+        LiveOrderGateBlockReason::MaxLossExceeded => 9,
+        LiveOrderGateBlockReason::DailyTradeCapExceeded => 10,
+        LiveOrderGateBlockReason::SupportedMarketRequired => 11,
+        LiveOrderGateBlockReason::OrderPermissionDenied => 12,
+        LiveOrderGateBlockReason::OrderChanceUnavailable => 13,
+        LiveOrderGateBlockReason::MarketOrderUnavailable => 14,
+        LiveOrderGateBlockReason::MinimumOrderAmountNotMet => 15,
+        LiveOrderGateBlockReason::InsufficientBalance => 16,
+        LiveOrderGateBlockReason::AuditDataUnavailable => 17,
     }
 }
 
@@ -1959,6 +2059,662 @@ fn live_order_approval_from_gate(gate: &LiveOrderGateDecision) -> Option<LiveOrd
     })
 }
 
+fn persist_live_order_block(gate: &LiveOrderGateDecision) -> Result<(), String> {
+    let safety_event_id = record_live_order_gate_block_event(gate).ok();
+    let mut logs = load_logs().map_err(|e| e.to_string())?;
+    logs.push(build_live_order_blocked_log(gate, safety_event_id));
+    persist_logs(&logs).map_err(|e| e.to_string())
+}
+
+fn live_order_chance_submission_block_reasons(
+    chance: &LiveOrderChance,
+    preview: &UpbitOrderPayloadPreview,
+    amount_krw: u64,
+) -> Vec<LiveOrderGateBlockReason> {
+    let mut block_reasons = Vec::new();
+    if chance.market != preview.market
+        || !chance.order_sides.iter().any(|side| side == &preview.side)
+        || !chance.supports_order_type(&preview.side, &preview.ord_type)
+    {
+        block_reasons.push(LiveOrderGateBlockReason::MarketOrderUnavailable);
+    }
+
+    let min_total = if preview.side == "bid" {
+        chance.bid_min_total_krw
+    } else {
+        chance.ask_min_total_krw
+    };
+    if let Some(min_total) = min_total {
+        if amount_krw < min_total {
+            block_reasons.push(LiveOrderGateBlockReason::MinimumOrderAmountNotMet);
+        }
+    } else {
+        block_reasons.push(LiveOrderGateBlockReason::OrderChanceUnavailable);
+    }
+
+    if preview.side == "bid" {
+        if chance.bid_balance < amount_krw as f64 {
+            block_reasons.push(LiveOrderGateBlockReason::InsufficientBalance);
+        }
+    } else {
+        let requested_volume = preview
+            .volume
+            .as_deref()
+            .and_then(|volume| volume.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        if requested_volume <= 0.0 || chance.ask_balance < requested_volume {
+            block_reasons.push(LiveOrderGateBlockReason::InsufficientBalance);
+        }
+    }
+
+    block_reasons
+}
+
+fn live_order_chance_error_block_reason(error: &str) -> LiveOrderGateBlockReason {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("out_of_scope")
+        || lower.contains("no_authorization")
+        || lower.contains("permission")
+        || lower.contains("권한")
+    {
+        LiveOrderGateBlockReason::OrderPermissionDenied
+    } else {
+        LiveOrderGateBlockReason::OrderChanceUnavailable
+    }
+}
+
+fn live_order_chance_settings_block_reasons(
+    chance: &LiveOrderChance,
+) -> Vec<LiveOrderGateBlockReason> {
+    let mut block_reasons = Vec::new();
+    if !chance.order_sides.iter().any(|side| side == "bid")
+        || !chance.supports_order_type("bid", "price")
+        || !chance.order_sides.iter().any(|side| side == "ask")
+        || !chance.supports_order_type("ask", "market")
+    {
+        block_reasons.push(LiveOrderGateBlockReason::MarketOrderUnavailable);
+    }
+    if chance
+        .bid_min_total_krw
+        .map(|min_total| DEFAULT_LIVE_CHANCE_PROBE_AMOUNT_KRW < min_total)
+        .unwrap_or(true)
+        || chance.ask_min_total_krw.is_none()
+    {
+        block_reasons.push(LiveOrderGateBlockReason::MinimumOrderAmountNotMet);
+    }
+    if chance.bid_balance < DEFAULT_LIVE_CHANCE_PROBE_AMOUNT_KRW as f64 || chance.ask_balance <= 0.0
+    {
+        block_reasons.push(LiveOrderGateBlockReason::InsufficientBalance);
+    }
+    block_reasons
+}
+
+fn build_live_order_chance_status(
+    market: &SupportedMarket,
+    chance: Option<&LiveOrderChance>,
+    block_reasons: Vec<LiveOrderGateBlockReason>,
+    detail: Option<String>,
+    checked_at: chrono::DateTime<Utc>,
+) -> LiveOrderChanceStatus {
+    let allowed = block_reasons.is_empty();
+    let reason = if allowed {
+        "Upbit /orders/chance 주문 가능성 확인을 통과했습니다".to_string()
+    } else {
+        let base = block_reasons
+            .iter()
+            .map(live_order_block_reason_text)
+            .collect::<Vec<_>>()
+            .join(" · ");
+        match detail {
+            Some(detail) if !detail.trim().is_empty() => format!("{base} · {detail}"),
+            _ => base,
+        }
+    };
+
+    LiveOrderChanceStatus {
+        allowed,
+        market: market.clone(),
+        bid_currency: chance
+            .map(|item| item.bid_currency.clone())
+            .unwrap_or_else(|| "KRW".to_string()),
+        bid_balance: chance.map(|item| item.bid_balance).unwrap_or(0.0),
+        ask_currency: chance
+            .map(|item| item.ask_currency.clone())
+            .unwrap_or_else(|| market_base_currency(market).to_string()),
+        ask_balance: chance.map(|item| item.ask_balance).unwrap_or(0.0),
+        minimum_bid_total_krw: chance.and_then(|item| item.bid_min_total_krw),
+        minimum_ask_total_krw: chance.and_then(|item| item.ask_min_total_krw),
+        market_buy_supported: chance
+            .map(|item| {
+                item.order_sides.iter().any(|side| side == "bid")
+                    && item.supports_order_type("bid", "price")
+            })
+            .unwrap_or(false),
+        market_sell_supported: chance
+            .map(|item| {
+                item.order_sides.iter().any(|side| side == "ask")
+                    && item.supports_order_type("ask", "market")
+            })
+            .unwrap_or(false),
+        block_reasons,
+        reason,
+        checked_at,
+    }
+}
+
+async fn submit_thread_live_market_buy_with_executor<E: LiveOrderExecutor>(
+    thread_id: String,
+    amount_krw: Option<u64>,
+    executor: &E,
+) -> Result<Vec<PurchaseLog>, String> {
+    let uuid = thread_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| "잘못된 스레드 ID".to_string())?;
+    let threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter()
+        .find(|thread| thread.id == uuid)
+        .cloned()
+        .ok_or_else(|| "시장가 매수를 제출할 스레드를 찾을 수 없습니다".to_string())?;
+    let order_amount = amount_krw.unwrap_or_else(|| paper_order_amount_krw(&thread));
+    let checked_at = Utc::now();
+    let order_request = build_upbit_order_request(
+        &thread.market,
+        LiveOrderIntent::MarketBuy,
+        order_amount,
+        None,
+    )?;
+    let credentials = get_credentials().map_err(|error| error.to_string());
+    let order_chance = match &credentials {
+        Ok((access_key, secret_key)) => {
+            executor
+                .order_chance(access_key, secret_key, &thread.market)
+                .await
+        }
+        Err(error) => Err(error.clone()),
+    };
+    let chance_error = order_chance.as_ref().err().cloned();
+    let gate = evaluate_live_order_gate(
+        LiveOrderGateInput::investment_thread(&thread, order_amount, checked_at).with_order_probe(
+            LiveOrderIntent::MarketBuy,
+            order_request.preview.clone(),
+            order_chance,
+        ),
+    );
+
+    if !gate.allowed {
+        persist_live_order_block(&gate)?;
+        return Err(match chance_error {
+            Some(error) => format!("{} · {}", gate.reason, error),
+            None => gate.reason,
+        });
+    }
+
+    let (access_key, secret_key) = credentials?;
+    let submission =
+        prepare_live_market_buy_submission_with_request(&thread, &gate, order_request, checked_at)?;
+
+    let submitted_event_id =
+        record_live_market_buy_submitted_event(&submission).map_err(|error| error.to_string())?;
+    let mut submitted_log = build_live_market_buy_submitted_log(&submission);
+    submitted_log.safety_event_id = Some(submitted_event_id);
+
+    let mut logs = load_logs().map_err(|e| e.to_string())?;
+    logs.push(submitted_log.clone());
+    persist_logs(&logs).map_err(|e| e.to_string())?;
+
+    match executor
+        .market_buy(&access_key, &secret_key, &submission)
+        .await
+    {
+        Ok(receipt) => {
+            let filled_event_id = record_live_market_buy_filled_event(&submission, &receipt)
+                .map_err(|error| error.to_string())?;
+            let mut filled_log = build_live_market_buy_filled_log(&submission, &receipt);
+            filled_log.safety_event_id = Some(filled_event_id);
+            logs.push(filled_log.clone());
+            persist_logs(&logs).map_err(|e| e.to_string())?;
+            Ok(vec![submitted_log, filled_log])
+        }
+        Err(error) => {
+            let failed_event_id = record_live_market_buy_failed_event(&submission, &error).ok();
+            let failed_log = build_live_market_buy_failed_log(&submission, &error, failed_event_id);
+            logs.push(failed_log);
+            persist_logs(&logs).map_err(|e| e.to_string())?;
+            Err(error)
+        }
+    }
+}
+
+async fn submit_thread_live_market_sell_with_executor<E: LiveOrderExecutor>(
+    request: LiveMarketSellRequest,
+    executor: &E,
+) -> Result<Vec<PurchaseLog>, String> {
+    let threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter()
+        .find(|thread| thread.id == request.thread_id)
+        .cloned()
+        .ok_or_else(|| "시장가 매도를 제출할 스레드를 찾을 수 없습니다".to_string())?;
+    let order_amount = request
+        .estimated_amount_krw
+        .unwrap_or(DEFAULT_LIVE_SELL_GATE_AMOUNT_KRW)
+        .max(DEFAULT_LIVE_SELL_GATE_AMOUNT_KRW);
+    let checked_at = Utc::now();
+    let order_request = build_upbit_order_request(
+        &thread.market,
+        LiveOrderIntent::MarketSell,
+        order_amount,
+        Some(request.volume.trim().to_string()),
+    )?;
+    let credentials = get_credentials().map_err(|error| error.to_string());
+    let order_chance = match &credentials {
+        Ok((access_key, secret_key)) => {
+            executor
+                .order_chance(access_key, secret_key, &thread.market)
+                .await
+        }
+        Err(error) => Err(error.clone()),
+    };
+    let chance_error = order_chance.as_ref().err().cloned();
+    let gate = evaluate_live_order_gate(
+        LiveOrderGateInput::investment_thread(&thread, order_amount, checked_at).with_order_probe(
+            LiveOrderIntent::MarketSell,
+            order_request.preview.clone(),
+            order_chance,
+        ),
+    );
+
+    if !gate.allowed {
+        persist_live_order_block(&gate)?;
+        return Err(match chance_error {
+            Some(error) => format!("{} · {}", gate.reason, error),
+            None => gate.reason,
+        });
+    }
+
+    let (access_key, secret_key) = credentials?;
+    let submission = prepare_live_market_sell_submission_with_request(
+        &thread,
+        request,
+        &gate,
+        order_request,
+        checked_at,
+    )?;
+
+    let submitted_event_id =
+        record_live_market_sell_submitted_event(&submission).map_err(|error| error.to_string())?;
+    let mut submitted_log = build_live_market_sell_submitted_log(&submission);
+    submitted_log.safety_event_id = Some(submitted_event_id);
+
+    let mut logs = load_logs().map_err(|e| e.to_string())?;
+    logs.push(submitted_log.clone());
+    persist_logs(&logs).map_err(|e| e.to_string())?;
+
+    match executor
+        .market_sell(&access_key, &secret_key, &submission)
+        .await
+    {
+        Ok(receipt) => {
+            let filled_event_id = record_live_market_sell_filled_event(&submission, &receipt)
+                .map_err(|error| error.to_string())?;
+            let mut filled_log = build_live_market_sell_filled_log(&submission, &receipt);
+            filled_log.safety_event_id = Some(filled_event_id);
+            logs.push(filled_log.clone());
+            persist_logs(&logs).map_err(|e| e.to_string())?;
+            Ok(vec![submitted_log, filled_log])
+        }
+        Err(error) => {
+            let failed_event_id = record_live_market_sell_failed_event(&submission, &error).ok();
+            let failed_log =
+                build_live_market_sell_failed_log(&submission, &error, failed_event_id);
+            logs.push(failed_log);
+            persist_logs(&logs).map_err(|e| e.to_string())?;
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+fn prepare_live_market_buy_submission(
+    thread: &InvestmentThread,
+    gate: &LiveOrderGateDecision,
+    submitted_at: chrono::DateTime<Utc>,
+) -> Result<LiveMarketBuySubmission, String> {
+    let request = build_upbit_order_request(
+        &thread.market,
+        LiveOrderIntent::MarketBuy,
+        gate.check.amount_krw,
+        None,
+    )?;
+    prepare_live_market_buy_submission_with_request(thread, gate, request, submitted_at)
+}
+
+fn prepare_live_market_buy_submission_with_request(
+    thread: &InvestmentThread,
+    gate: &LiveOrderGateDecision,
+    request: UpbitOrderRequest,
+    submitted_at: chrono::DateTime<Utc>,
+) -> Result<LiveMarketBuySubmission, String> {
+    let approval = live_order_approval_from_gate(gate).ok_or_else(|| gate.reason.clone())?;
+    Ok(LiveMarketBuySubmission {
+        approval,
+        request,
+        thread_id: thread.id,
+        gate_reason: gate.reason.clone(),
+        submitted_at,
+    })
+}
+
+#[cfg(test)]
+fn prepare_live_market_sell_submission(
+    thread: &InvestmentThread,
+    request: LiveMarketSellRequest,
+    gate: &LiveOrderGateDecision,
+    submitted_at: chrono::DateTime<Utc>,
+) -> Result<LiveMarketSellSubmission, String> {
+    let volume = request.volume.trim().to_string();
+    let upbit_request = build_upbit_order_request(
+        &thread.market,
+        LiveOrderIntent::MarketSell,
+        gate.check.amount_krw,
+        Some(volume.clone()),
+    )?;
+    prepare_live_market_sell_submission_with_request(
+        thread,
+        request,
+        gate,
+        upbit_request,
+        submitted_at,
+    )
+}
+
+fn prepare_live_market_sell_submission_with_request(
+    thread: &InvestmentThread,
+    request: LiveMarketSellRequest,
+    gate: &LiveOrderGateDecision,
+    upbit_request: UpbitOrderRequest,
+    submitted_at: chrono::DateTime<Utc>,
+) -> Result<LiveMarketSellSubmission, String> {
+    let approval = live_order_approval_from_gate(gate).ok_or_else(|| gate.reason.clone())?;
+    let volume = request.volume.trim().to_string();
+    Ok(LiveMarketSellSubmission {
+        approval,
+        request: upbit_request,
+        thread_id: thread.id,
+        volume,
+        policy_reason: request
+            .policy_reason
+            .filter(|reason| !reason.trim().is_empty()),
+        gate_reason: gate.reason.clone(),
+        submitted_at,
+    })
+}
+
+fn build_upbit_order_request(
+    market: &SupportedMarket,
+    intent: LiveOrderIntent,
+    amount_krw: u64,
+    volume: Option<String>,
+) -> Result<UpbitOrderRequest, String> {
+    let identifier = live_order_identifier(&intent);
+    match intent {
+        LiveOrderIntent::MarketBuy => {
+            if amount_krw == 0 {
+                return Err("시장가 매수 금액은 0원보다 커야 합니다".to_string());
+            }
+            let price = amount_krw.to_string();
+            let side = "bid".to_string();
+            let ord_type = "price".to_string();
+            let query_string = format!(
+                "market={}&side=bid&ord_type=price&price={price}&identifier={identifier}",
+                market.as_upbit_market()
+            );
+            let preview = UpbitOrderPayloadPreview {
+                market: market.clone(),
+                side: side.clone(),
+                ord_type: ord_type.clone(),
+                price: Some(price),
+                volume: None,
+                identifier: identifier.clone(),
+                query_string,
+            };
+            Ok(UpbitOrderRequest {
+                json_body: serde_json::json!({
+                    "market": market.as_upbit_market(),
+                    "side": side,
+                    "ord_type": ord_type,
+                    "price": amount_krw.to_string(),
+                    "identifier": identifier,
+                }),
+                preview,
+            })
+        }
+        LiveOrderIntent::MarketSell => {
+            let volume = volume
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "시장가 매도에는 volume이 필요합니다".to_string())?;
+            let parsed_volume = volume
+                .parse::<f64>()
+                .map_err(|_| "시장가 매도 volume은 숫자여야 합니다".to_string())?;
+            if !parsed_volume.is_finite() || parsed_volume <= 0.0 {
+                return Err("시장가 매도 volume은 0보다 커야 합니다".to_string());
+            }
+            let volume = parsed_volume.to_string();
+            let side = "ask".to_string();
+            let ord_type = "market".to_string();
+            let query_string = format!(
+                "market={}&side=ask&ord_type=market&volume={volume}&identifier={identifier}",
+                market.as_upbit_market()
+            );
+            let preview = UpbitOrderPayloadPreview {
+                market: market.clone(),
+                side: side.clone(),
+                ord_type: ord_type.clone(),
+                price: None,
+                volume: Some(volume.clone()),
+                identifier: identifier.clone(),
+                query_string,
+            };
+            Ok(UpbitOrderRequest {
+                json_body: serde_json::json!({
+                    "market": market.as_upbit_market(),
+                    "side": side,
+                    "ord_type": ord_type,
+                    "volume": volume,
+                    "identifier": identifier,
+                }),
+                preview,
+            })
+        }
+    }
+}
+
+fn build_upbit_order_payload_preview(
+    market: &SupportedMarket,
+    intent: LiveOrderIntent,
+    amount_krw: u64,
+    volume: Option<String>,
+) -> Result<UpbitOrderPayloadPreview, String> {
+    Ok(build_upbit_order_request(market, intent, amount_krw, volume)?.preview)
+}
+
+fn build_live_market_buy_submitted_log(submission: &LiveMarketBuySubmission) -> PurchaseLog {
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(submission.thread_id),
+        executed_at: submission.submitted_at,
+        amount_krw: submission.approval.amount_krw,
+        volume_btc: 0.0,
+        status: PurchaseStatus::Submitted,
+        error_message: None,
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Live,
+        action: PurchaseLogAction::MarketBuy,
+        audit_category: AuditCategory::Trade,
+        title: Some("Live 시장가 매수 제출".to_string()),
+        reason: Some(format!(
+            "Live Order Gate 승인 후 Upbit 주문 제출: {}",
+            submission.gate_reason
+        )),
+        safety_event_id: None,
+        strategy_signal_reason: None,
+        idempotency_key: Some(submission.request.preview.identifier.clone()),
+    }
+}
+
+fn build_live_market_buy_filled_log(
+    submission: &LiveMarketBuySubmission,
+    receipt: &LiveOrderExecutionReceipt,
+) -> PurchaseLog {
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(submission.thread_id),
+        executed_at: Utc::now(),
+        amount_krw: submission.approval.amount_krw,
+        volume_btc: receipt.executed_volume,
+        status: PurchaseStatus::Filled,
+        error_message: None,
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Live,
+        action: PurchaseLogAction::MarketBuy,
+        audit_category: AuditCategory::Trade,
+        title: Some("Live 시장가 매수 체결".to_string()),
+        reason: Some(format!(
+            "Upbit 주문 응답 state={} uuid={}",
+            receipt.state,
+            receipt.upbit_uuid.as_deref().unwrap_or("unknown")
+        )),
+        safety_event_id: None,
+        strategy_signal_reason: None,
+        idempotency_key: Some(submission.request.preview.identifier.clone()),
+    }
+}
+
+fn build_live_market_buy_failed_log(
+    submission: &LiveMarketBuySubmission,
+    error: &str,
+    safety_event_id: Option<uuid::Uuid>,
+) -> PurchaseLog {
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(submission.thread_id),
+        executed_at: Utc::now(),
+        amount_krw: submission.approval.amount_krw,
+        volume_btc: 0.0,
+        status: PurchaseStatus::Failed,
+        error_message: Some(error.to_string()),
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Live,
+        action: PurchaseLogAction::MarketBuy,
+        audit_category: AuditCategory::ApiFailure,
+        title: Some("Live 시장가 매수 실패".to_string()),
+        reason: Some("Upbit 주문 제출 또는 응답 처리 실패".to_string()),
+        safety_event_id,
+        strategy_signal_reason: None,
+        idempotency_key: Some(submission.request.preview.identifier.clone()),
+    }
+}
+
+fn build_live_market_sell_submitted_log(submission: &LiveMarketSellSubmission) -> PurchaseLog {
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(submission.thread_id),
+        executed_at: submission.submitted_at,
+        amount_krw: submission.approval.amount_krw,
+        volume_btc: submission.volume.parse::<f64>().unwrap_or(0.0),
+        status: PurchaseStatus::Submitted,
+        error_message: None,
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Live,
+        action: PurchaseLogAction::MarketSell,
+        audit_category: AuditCategory::Trade,
+        title: Some("Live 시장가 매도 제출".to_string()),
+        reason: Some(format!(
+            "Live Order Gate 승인 후 Upbit 매도 주문 제출: {}; policy={}",
+            submission.gate_reason,
+            submission.policy_reason.as_deref().unwrap_or("unspecified")
+        )),
+        safety_event_id: None,
+        strategy_signal_reason: submission.policy_reason.clone(),
+        idempotency_key: Some(submission.request.preview.identifier.clone()),
+    }
+}
+
+fn build_live_market_sell_filled_log(
+    submission: &LiveMarketSellSubmission,
+    receipt: &LiveOrderExecutionReceipt,
+) -> PurchaseLog {
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(submission.thread_id),
+        executed_at: Utc::now(),
+        amount_krw: receipt
+            .executed_funds_krw
+            .unwrap_or(submission.approval.amount_krw),
+        volume_btc: receipt.executed_volume,
+        status: PurchaseStatus::Filled,
+        error_message: None,
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Live,
+        action: PurchaseLogAction::MarketSell,
+        audit_category: AuditCategory::Trade,
+        title: Some("Live 시장가 매도 체결".to_string()),
+        reason: Some(format!(
+            "Upbit 매도 응답 state={} uuid={}",
+            receipt.state,
+            receipt.upbit_uuid.as_deref().unwrap_or("unknown")
+        )),
+        safety_event_id: None,
+        strategy_signal_reason: submission.policy_reason.clone(),
+        idempotency_key: Some(submission.request.preview.identifier.clone()),
+    }
+}
+
+fn build_live_market_sell_failed_log(
+    submission: &LiveMarketSellSubmission,
+    error: &str,
+    safety_event_id: Option<uuid::Uuid>,
+) -> PurchaseLog {
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(submission.thread_id),
+        executed_at: Utc::now(),
+        amount_krw: submission.approval.amount_krw,
+        volume_btc: submission.volume.parse::<f64>().unwrap_or(0.0),
+        status: PurchaseStatus::Failed,
+        error_message: Some(error.to_string()),
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Live,
+        action: PurchaseLogAction::MarketSell,
+        audit_category: AuditCategory::ApiFailure,
+        title: Some("Live 시장가 매도 실패".to_string()),
+        reason: Some("Upbit 매도 주문 제출 또는 응답 처리 실패".to_string()),
+        safety_event_id,
+        strategy_signal_reason: submission.policy_reason.clone(),
+        idempotency_key: Some(submission.request.preview.identifier.clone()),
+    }
+}
+
+fn live_order_identifier(intent: &LiveOrderIntent) -> String {
+    let intent_code = match intent {
+        LiveOrderIntent::MarketBuy => "b",
+        LiveOrderIntent::MarketSell => "s",
+    };
+    format!(
+        "vt{intent_code}{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..29]
+    )
+}
+
 fn record_live_order_gate_block_event(gate: &LiveOrderGateDecision) -> anyhow::Result<uuid::Uuid> {
     record_safety_event(
         gate.check.thread_id,
@@ -1974,6 +2730,155 @@ fn record_live_order_gate_block_event(gate: &LiveOrderGateDecision) -> anyhow::R
             live_order_gate_source_label(&gate.check.source),
             gate.check.amount_krw,
             gate.reason
+        ),
+    )
+}
+
+fn record_live_market_buy_submitted_event(
+    submission: &LiveMarketBuySubmission,
+) -> anyhow::Result<uuid::Uuid> {
+    record_safety_event(
+        Some(submission.thread_id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::SafetyGate,
+            source: Some("live_market_buy".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=submitted; identifier={}; amountKrw={}; gate={}",
+                submission.request.preview.identifier,
+                submission.approval.amount_krw,
+                submission.gate_reason
+            )),
+        },
+        format!("{}원 Live 시장가 매수 제출", submission.approval.amount_krw),
+    )
+}
+
+fn record_live_market_buy_filled_event(
+    submission: &LiveMarketBuySubmission,
+    receipt: &LiveOrderExecutionReceipt,
+) -> anyhow::Result<uuid::Uuid> {
+    record_safety_event(
+        Some(submission.thread_id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::Trade,
+            source: Some("live_market_buy".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=filled; identifier={}; upbitUuid={}; state={}; executedVolume={}",
+                submission.request.preview.identifier,
+                receipt.upbit_uuid.as_deref().unwrap_or("unknown"),
+                receipt.state,
+                receipt.executed_volume
+            )),
+        },
+        format!(
+            "{}원 Live 시장가 매수 체결 · {:.8} BTC",
+            submission.approval.amount_krw, receipt.executed_volume
+        ),
+    )
+}
+
+fn record_live_market_buy_failed_event(
+    submission: &LiveMarketBuySubmission,
+    error: &str,
+) -> anyhow::Result<uuid::Uuid> {
+    record_safety_event(
+        Some(submission.thread_id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Warning,
+            category: AuditCategory::ApiFailure,
+            source: Some("live_market_buy".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=failed; identifier={}; amountKrw={}; error={}",
+                submission.request.preview.identifier, submission.approval.amount_krw, error
+            )),
+        },
+        format!(
+            "{}원 Live 시장가 매수 실패 · {}",
+            submission.approval.amount_krw, error
+        ),
+    )
+}
+
+fn record_live_market_sell_submitted_event(
+    submission: &LiveMarketSellSubmission,
+) -> anyhow::Result<uuid::Uuid> {
+    record_safety_event(
+        Some(submission.thread_id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::SafetyGate,
+            source: Some("live_market_sell".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=submitted; identifier={}; amountKrw={}; volume={}; policy={}; gate={}",
+                submission.request.preview.identifier,
+                submission.approval.amount_krw,
+                submission.volume,
+                submission.policy_reason.as_deref().unwrap_or("unspecified"),
+                submission.gate_reason
+            )),
+        },
+        format!("{} BTC Live 시장가 매도 제출", submission.volume),
+    )
+}
+
+fn record_live_market_sell_filled_event(
+    submission: &LiveMarketSellSubmission,
+    receipt: &LiveOrderExecutionReceipt,
+) -> anyhow::Result<uuid::Uuid> {
+    record_safety_event(
+        Some(submission.thread_id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::Trade,
+            source: Some("live_market_sell".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=filled; identifier={}; upbitUuid={}; state={}; executedVolume={}; executedFundsKrw={}",
+                submission.request.preview.identifier,
+                receipt.upbit_uuid.as_deref().unwrap_or("unknown"),
+                receipt.state,
+                receipt.executed_volume,
+                receipt
+                    .executed_funds_krw
+                    .map(|amount| amount.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            )),
+        },
+        format!(
+            "{} BTC Live 시장가 매도 체결",
+            submission.volume
+        ),
+    )
+}
+
+fn record_live_market_sell_failed_event(
+    submission: &LiveMarketSellSubmission,
+    error: &str,
+) -> anyhow::Result<uuid::Uuid> {
+    record_safety_event(
+        Some(submission.thread_id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Warning,
+            category: AuditCategory::ApiFailure,
+            source: Some("live_market_sell".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=failed; identifier={}; amountKrw={}; volume={}; error={}",
+                submission.request.preview.identifier,
+                submission.approval.amount_krw,
+                submission.volume,
+                error
+            )),
+        },
+        format!(
+            "{} BTC Live 시장가 매도 실패 · {}",
+            submission.volume, error
         ),
     )
 }
@@ -1996,6 +2901,28 @@ fn purchase_log_source_for_gate(source: &LiveOrderGateSource) -> PurchaseLogSour
     match source {
         LiveOrderGateSource::LegacySchedule => PurchaseLogSource::LegacySchedule,
         LiveOrderGateSource::InvestmentThread => PurchaseLogSource::InvestmentThread,
+    }
+}
+
+impl LiveOrderChance {
+    fn supports_order_type(&self, side: &str, ord_type: &str) -> bool {
+        let side_types = match side {
+            "bid" => &self.bid_types,
+            "ask" => &self.ask_types,
+            _ => return false,
+        };
+        if side_types.iter().any(|item| item == ord_type) {
+            return true;
+        }
+        side_types.is_empty() && self.order_types.iter().any(|item| item == ord_type)
+    }
+}
+
+fn market_base_currency(market: &SupportedMarket) -> &'static str {
+    match market {
+        SupportedMarket::KrwBtc => "BTC",
+        SupportedMarket::KrwEth => "ETH",
+        SupportedMarket::KrwXrp => "XRP",
     }
 }
 
@@ -2104,14 +3031,48 @@ async fn upbit_get_btc_price_krw() -> Result<f64, String> {
         .unwrap_or(0.0))
 }
 
-#[allow(dead_code)]
-async fn upbit_market_buy(
+impl LiveOrderExecutor for UpbitLiveOrderExecutor {
+    fn order_chance<'a>(
+        &'a self,
+        access_key: &'a str,
+        secret_key: &'a str,
+        market: &'a SupportedMarket,
+    ) -> Pin<Box<dyn Future<Output = Result<LiveOrderChance, String>> + Send + 'a>> {
+        Box::pin(
+            async move { execute_upbit_order_chance_request(access_key, secret_key, market).await },
+        )
+    }
+
+    fn market_buy<'a>(
+        &'a self,
+        access_key: &'a str,
+        secret_key: &'a str,
+        submission: &'a LiveMarketBuySubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>> {
+        Box::pin(async move {
+            execute_upbit_order_request(access_key, secret_key, &submission.request).await
+        })
+    }
+
+    fn market_sell<'a>(
+        &'a self,
+        access_key: &'a str,
+        secret_key: &'a str,
+        submission: &'a LiveMarketSellSubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>> {
+        Box::pin(async move {
+            execute_upbit_order_request(access_key, secret_key, &submission.request).await
+        })
+    }
+}
+
+async fn execute_upbit_order_chance_request(
     access_key: &str,
     secret_key: &str,
-    approval: &LiveOrderGateApproval,
-) -> Result<f64, String> {
+    market: &SupportedMarket,
+) -> Result<LiveOrderChance, String> {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha512};
 
     #[derive(Serialize)]
@@ -2122,12 +3083,127 @@ async fn upbit_market_buy(
         query_hash_alg: String,
     }
 
-    let query = format!(
-        "market={}&side=bid&price={}&ord_type=price",
-        approval.market.as_upbit_market(),
-        approval.amount_krw
-    );
-    let query_hash = hex_string(Sha512::digest(query.as_bytes()).as_slice());
+    #[derive(Deserialize)]
+    struct ChanceAccountResponse {
+        currency: String,
+        balance: String,
+    }
+
+    #[derive(Deserialize, Default)]
+    struct ChanceMarketTotalResponse {
+        min_total: Option<serde_json::Value>,
+    }
+
+    #[derive(Deserialize, Default)]
+    struct ChanceMarketResponse {
+        id: Option<String>,
+        #[serde(default)]
+        order_sides: Vec<String>,
+        #[serde(default)]
+        order_types: Vec<String>,
+        #[serde(default)]
+        bid_types: Vec<String>,
+        #[serde(default)]
+        ask_types: Vec<String>,
+        #[serde(default)]
+        bid: Option<ChanceMarketTotalResponse>,
+        #[serde(default)]
+        ask: Option<ChanceMarketTotalResponse>,
+    }
+
+    #[derive(Deserialize)]
+    struct ChanceResponse {
+        bid_account: ChanceAccountResponse,
+        ask_account: ChanceAccountResponse,
+        market: ChanceMarketResponse,
+    }
+
+    let query_string = format!("market={}", market.as_upbit_market());
+    let query_hash = hex_string(Sha512::digest(query_string.as_bytes()).as_slice());
+    let claims = Claims {
+        access_key: access_key.to_string(),
+        nonce: uuid::Uuid::new_v4().to_string(),
+        query_hash,
+        query_hash_alg: "SHA512".to_string(),
+    };
+
+    let token = encode(
+        &Header::new(Algorithm::HS512),
+        &claims,
+        &EncodingKey::from_secret(secret_key.as_bytes()),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.upbit.com/v1/orders/chance")
+        .header("Authorization", format!("Bearer {token}"))
+        .query(&[("market", market.as_upbit_market())])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("업비트 주문 가능 정보 오류: HTTP {status} {body}"));
+    }
+
+    let response = resp
+        .json::<ChanceResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+    if response.market.id.as_deref() != Some(market.as_upbit_market()) {
+        return Err("업비트 주문 가능 정보의 마켓이 요청과 일치하지 않습니다".to_string());
+    }
+
+    Ok(LiveOrderChance {
+        market: market.clone(),
+        bid_currency: response.bid_account.currency,
+        bid_balance: response.bid_account.balance.parse::<f64>().unwrap_or(0.0),
+        ask_currency: response.ask_account.currency,
+        ask_balance: response.ask_account.balance.parse::<f64>().unwrap_or(0.0),
+        order_sides: response.market.order_sides,
+        order_types: response.market.order_types,
+        bid_types: response.market.bid_types,
+        ask_types: response.market.ask_types,
+        bid_min_total_krw: response
+            .market
+            .bid
+            .and_then(|total| parse_upbit_krw_amount(total.min_total)),
+        ask_min_total_krw: response
+            .market
+            .ask
+            .and_then(|total| parse_upbit_krw_amount(total.min_total)),
+    })
+}
+
+async fn execute_upbit_order_request(
+    access_key: &str,
+    secret_key: &str,
+    request: &UpbitOrderRequest,
+) -> Result<LiveOrderExecutionReceipt, String> {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use serde::{Deserialize, Serialize};
+    use sha2::{Digest, Sha512};
+
+    #[derive(Serialize)]
+    struct Claims {
+        access_key: String,
+        nonce: String,
+        query_hash: String,
+        query_hash_alg: String,
+    }
+
+    #[derive(Deserialize)]
+    struct OrderResponse {
+        uuid: Option<String>,
+        state: Option<String>,
+        executed_volume: Option<String>,
+        executed_funds: Option<String>,
+    }
+
+    let query_hash = hex_string(Sha512::digest(request.preview.query_string.as_bytes()).as_slice());
     let claims = Claims {
         access_key: access_key.to_string(),
         nonce: uuid::Uuid::new_v4().to_string(),
@@ -2146,8 +3222,7 @@ async fn upbit_market_buy(
     let resp = client
         .post("https://api.upbit.com/v1/orders")
         .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(query)
+        .json(&request.json_body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -2158,15 +3233,41 @@ async fn upbit_market_buy(
         return Err(format!("업비트 주문 오류: HTTP {status} {body}"));
     }
 
-    let value = resp
+    let response_body = resp
         .json::<serde_json::Value>()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(value
-        .get("executed_volume")
-        .and_then(|volume| volume.as_str())
+    let response: OrderResponse =
+        serde_json::from_value(response_body.clone()).map_err(|e| e.to_string())?;
+    let executed_volume = response
+        .executed_volume
+        .as_deref()
         .and_then(|volume| volume.parse::<f64>().ok())
-        .unwrap_or(0.0))
+        .unwrap_or(0.0);
+    let executed_funds_krw = response
+        .executed_funds
+        .as_deref()
+        .and_then(|funds| funds.parse::<f64>().ok())
+        .filter(|funds| funds.is_finite() && *funds >= 0.0)
+        .map(|funds| funds.round() as u64);
+
+    Ok(LiveOrderExecutionReceipt {
+        upbit_uuid: response.uuid,
+        state: response.state.unwrap_or_else(|| "unknown".to_string()),
+        executed_volume,
+        executed_funds_krw,
+    })
+}
+
+fn parse_upbit_krw_amount(value: Option<serde_json::Value>) -> Option<u64> {
+    value
+        .and_then(|value| match value {
+            serde_json::Value::String(text) => text.parse::<f64>().ok(),
+            serde_json::Value::Number(number) => number.as_f64(),
+            _ => None,
+        })
+        .filter(|amount| amount.is_finite() && *amount >= 0.0)
+        .map(|amount| amount.ceil() as u64)
 }
 
 #[allow(dead_code)]
@@ -2532,6 +3633,7 @@ mod tests {
             LiveOrderGateInput::legacy_schedule(&schedule),
             LiveOrderGateData {
                 settings: Ok(&settings),
+                credentials_available: Ok(true),
                 logs: Ok(&logs),
                 validation_results: Ok(&validations),
             },
@@ -2561,6 +3663,7 @@ mod tests {
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
             LiveOrderGateData {
                 settings: Ok(&settings),
+                credentials_available: Ok(true),
                 logs: Ok(&logs),
                 validation_results: Ok(&validations),
             },
@@ -2570,6 +3673,63 @@ mod tests {
         assert!(gate
             .block_reasons
             .contains(&LiveOrderGateBlockReason::FinalConfirmationMissing));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_blocks_live_thread_with_status_only_confirmation() {
+        let now = Utc::now();
+        let mut thread = sample_thread(now);
+        thread.status = ThreadStatus::Live;
+        thread.validation_status = ValidationStatus::Pass;
+        thread.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                credentials_available: Ok(true),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::FinalConfirmationMissing));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_blocks_live_thread_without_credentials_or_strategy_approval() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let mut settings = unlocked_settings();
+        settings.strategy_logic_approved = false;
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                credentials_available: Ok(false),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::CredentialsMissing));
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::StrategyLogicNotApproved));
         assert!(live_order_approval_from_gate(&gate).is_none());
     }
 
@@ -2587,6 +3747,7 @@ mod tests {
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
             LiveOrderGateData {
                 settings: Ok(&settings),
+                credentials_available: Ok(true),
                 logs: Ok(&logs),
                 validation_results: Ok(&validations),
             },
@@ -2612,6 +3773,7 @@ mod tests {
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
             LiveOrderGateData {
                 settings: Ok(&settings),
+                credentials_available: Ok(true),
                 logs: Ok(&logs),
                 validation_results: Ok(&validations),
             },
@@ -2638,6 +3800,7 @@ mod tests {
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
             LiveOrderGateData {
                 settings: Ok(&settings),
+                credentials_available: Ok(true),
                 logs: Ok(&logs),
                 validation_results: Ok(&validations),
             },
@@ -2649,6 +3812,236 @@ mod tests {
         assert!(gate.block_reasons.is_empty());
         assert_eq!(approval.market, SupportedMarket::KrwBtc);
         assert_eq!(approval.amount_krw, 20_000);
+    }
+
+    #[test]
+    fn shared_gate_includes_order_chance_tradability_blocks_for_buy_action() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+        let request =
+            build_upbit_order_request(&thread.market, LiveOrderIntent::MarketBuy, 20_000, None)
+                .expect("buy request");
+        let mut chance = sample_live_order_chance(&thread.market, 10_000.0, 1.0);
+        chance.bid_min_total_krw = Some(25_000);
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now).with_order_probe(
+                LiveOrderIntent::MarketBuy,
+                request.preview,
+                Ok(chance),
+            ),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                credentials_available: Ok(true),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert_eq!(gate.check.intent, Some(LiveOrderIntent::MarketBuy));
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::InsufficientBalance));
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::MinimumOrderAmountNotMet));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_includes_order_chance_failure_for_sell_action() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+        let request = build_upbit_order_request(
+            &thread.market,
+            LiveOrderIntent::MarketSell,
+            20_000,
+            Some("0.001".to_string()),
+        )
+        .expect("sell request");
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now).with_order_probe(
+                LiveOrderIntent::MarketSell,
+                request.preview,
+                Err("HTTP 503 temporary upstream failure".to_string()),
+            ),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                credentials_available: Ok(true),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert_eq!(gate.check.intent, Some(LiveOrderIntent::MarketSell));
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::OrderChanceUnavailable));
+        assert!(live_order_approval_from_gate(&gate).is_none());
+    }
+
+    #[test]
+    fn shared_gate_classifies_order_permission_failure_from_chance_probe() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
+        let request =
+            build_upbit_order_request(&thread.market, LiveOrderIntent::MarketBuy, 20_000, None)
+                .expect("buy request");
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now).with_order_probe(
+                LiveOrderIntent::MarketBuy,
+                request.preview,
+                Err("HTTP 401 out_of_scope".to_string()),
+            ),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                credentials_available: Ok(true),
+                logs: Ok(&logs),
+                validation_results: Ok(&validations),
+            },
+        );
+
+        assert!(!gate.allowed);
+        assert!(gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::OrderPermissionDenied));
+    }
+
+    #[test]
+    fn upbit_market_buy_payload_uses_price_order_json_shape() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+
+        let payload = build_upbit_order_payload_preview(
+            &thread.market,
+            LiveOrderIntent::MarketBuy,
+            20_000,
+            None,
+        )
+        .expect("market buy payload");
+
+        assert_eq!(payload.market, SupportedMarket::KrwBtc);
+        assert_eq!(payload.side, "bid");
+        assert_eq!(payload.ord_type, "price");
+        assert_eq!(payload.price.as_deref(), Some("20000"));
+        assert_eq!(payload.volume, None);
+        assert!(payload.query_string.contains("side=bid"));
+        assert!(payload.query_string.contains("ord_type=price"));
+        assert!(payload.query_string.contains("price=20000"));
+        assert!(payload.identifier.len() <= 32);
+    }
+
+    #[test]
+    fn upbit_market_buy_payload_allows_gate_to_decide_minimum_amount() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+
+        let payload = build_upbit_order_payload_preview(
+            &thread.market,
+            LiveOrderIntent::MarketBuy,
+            4_999,
+            None,
+        )
+        .expect("market buy preview");
+
+        assert_eq!(payload.price.as_deref(), Some("4999"));
+    }
+
+    #[test]
+    fn upbit_market_sell_payload_uses_market_order_json_shape() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+
+        let payload = build_upbit_order_payload_preview(
+            &thread.market,
+            LiveOrderIntent::MarketSell,
+            0,
+            Some("0.005".to_string()),
+        )
+        .expect("market sell payload");
+
+        assert_eq!(payload.side, "ask");
+        assert_eq!(payload.ord_type, "market");
+        assert_eq!(payload.price, None);
+        assert_eq!(payload.volume.as_deref(), Some("0.005"));
+        assert!(payload.query_string.contains("side=ask"));
+        assert!(payload.query_string.contains("ord_type=market"));
+        assert!(payload.query_string.contains("volume=0.005"));
+        assert!(payload.identifier.len() <= 32);
+    }
+
+    #[test]
+    fn upbit_market_sell_payload_rejects_non_positive_or_non_numeric_volume() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+
+        let zero = build_upbit_order_payload_preview(
+            &thread.market,
+            LiveOrderIntent::MarketSell,
+            0,
+            Some("0".to_string()),
+        );
+        let injected = build_upbit_order_payload_preview(
+            &thread.market,
+            LiveOrderIntent::MarketSell,
+            0,
+            Some("0.01&side=bid".to_string()),
+        );
+
+        assert!(zero.is_err());
+        assert!(injected.is_err());
+    }
+
+    #[test]
+    fn upbit_order_request_preview_and_json_body_share_serialization_contract() {
+        let request = build_upbit_order_request(
+            &SupportedMarket::KrwBtc,
+            LiveOrderIntent::MarketBuy,
+            20_000,
+            None,
+        )
+        .expect("order request");
+
+        assert_eq!(
+            request.preview.query_string,
+            format!(
+                "market=KRW-BTC&side=bid&ord_type=price&price=20000&identifier={}",
+                request.preview.identifier
+            )
+        );
+        assert_eq!(request.json_body["market"], "KRW-BTC");
+        assert_eq!(request.json_body["side"], request.preview.side);
+        assert_eq!(request.json_body["ord_type"], request.preview.ord_type);
+        assert_eq!(request.json_body["price"], "20000");
+        assert_eq!(request.json_body["identifier"], request.preview.identifier);
+    }
+
+    #[test]
+    fn live_order_identifier_policy_is_shared_and_short() {
+        let buy_identifier = live_order_identifier(&LiveOrderIntent::MarketBuy);
+        let sell_identifier = live_order_identifier(&LiveOrderIntent::MarketSell);
+
+        assert!(buy_identifier.starts_with("vtb"));
+        assert!(sell_identifier.starts_with("vts"));
+        assert!(buy_identifier.len() <= 32);
+        assert!(sell_identifier.len() <= 32);
+        assert_ne!(
+            buy_identifier,
+            live_order_identifier(&LiveOrderIntent::MarketBuy)
+        );
     }
 
     #[test]
@@ -2737,13 +4130,323 @@ mod tests {
     }
 
     #[test]
+    fn live_market_buy_submission_requires_gate_approval() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::InvestmentThread,
+                thread_id: Some(thread.id),
+                related_schedule_id: None,
+                market: thread.market.clone(),
+                intent: None,
+                amount_krw: 20_000,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Confirmed,
+                daily_trade_count: 0,
+                daily_trade_cap: thread.daily_trade_cap,
+                max_loss_percent: Some(thread.max_loss_percent),
+                latest_max_drawdown_percent: Some(4.0),
+                checked_at: now,
+            },
+            vec![LiveOrderGateBlockReason::GlobalLiveLocked],
+        );
+
+        let submission = prepare_live_market_buy_submission(&thread, &gate, now);
+
+        assert!(submission.is_err());
+    }
+
+    #[tokio::test]
+    async fn live_market_buy_executor_boundary_is_mockable() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        struct MockExecutor {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl LiveOrderExecutor for MockExecutor {
+            fn order_chance<'a>(
+                &'a self,
+                _access_key: &'a str,
+                _secret_key: &'a str,
+                market: &'a SupportedMarket,
+            ) -> Pin<Box<dyn Future<Output = Result<LiveOrderChance, String>> + Send + 'a>>
+            {
+                Box::pin(async move { Ok(sample_live_order_chance(market, 100_000.0, 1.0)) })
+            }
+
+            fn market_buy<'a>(
+                &'a self,
+                _access_key: &'a str,
+                _secret_key: &'a str,
+                submission: &'a LiveMarketBuySubmission,
+            ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>>
+            {
+                let calls = self.calls.clone();
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(LiveOrderExecutionReceipt {
+                        upbit_uuid: Some("mock-order".to_string()),
+                        state: "done".to_string(),
+                        executed_volume: submission.approval.amount_krw as f64 / 50_000_000.0,
+                        executed_funds_krw: Some(submission.approval.amount_krw),
+                    })
+                })
+            }
+
+            fn market_sell<'a>(
+                &'a self,
+                _access_key: &'a str,
+                _secret_key: &'a str,
+                _submission: &'a LiveMarketSellSubmission,
+            ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>>
+            {
+                Box::pin(async move { Err("unexpected sell call".to_string()) })
+            }
+        }
+
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::InvestmentThread,
+                thread_id: Some(thread.id),
+                related_schedule_id: None,
+                market: thread.market.clone(),
+                intent: None,
+                amount_krw: 20_000,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Confirmed,
+                daily_trade_count: 0,
+                daily_trade_cap: thread.daily_trade_cap,
+                max_loss_percent: Some(thread.max_loss_percent),
+                latest_max_drawdown_percent: Some(4.0),
+                checked_at: now,
+            },
+            vec![],
+        );
+        let submission =
+            prepare_live_market_buy_submission(&thread, &gate, now).expect("approved submission");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = MockExecutor {
+            calls: calls.clone(),
+        };
+
+        let receipt = executor
+            .market_buy("access", "secret", &submission)
+            .await
+            .expect("mock receipt");
+        let submitted = build_live_market_buy_submitted_log(&submission);
+        let filled = build_live_market_buy_filled_log(&submission, &receipt);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(submitted.status, PurchaseStatus::Submitted);
+        assert_eq!(filled.status, PurchaseStatus::Filled);
+        assert_eq!(filled.idempotency_key, submitted.idempotency_key);
+        assert_eq!(filled.volume_btc, 0.0004);
+    }
+
+    #[test]
+    fn live_market_sell_submission_requires_gate_approval() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::InvestmentThread,
+                thread_id: Some(thread.id),
+                related_schedule_id: None,
+                market: thread.market.clone(),
+                intent: None,
+                amount_krw: 20_000,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Confirmed,
+                daily_trade_count: 0,
+                daily_trade_cap: thread.daily_trade_cap,
+                max_loss_percent: Some(thread.max_loss_percent),
+                latest_max_drawdown_percent: Some(4.0),
+                checked_at: now,
+            },
+            vec![LiveOrderGateBlockReason::GlobalLiveLocked],
+        );
+        let request = LiveMarketSellRequest {
+            thread_id: thread.id,
+            volume: "0.001".to_string(),
+            estimated_amount_krw: Some(20_000),
+            policy_reason: Some("strategy_signal_sell".to_string()),
+        };
+
+        let submission = prepare_live_market_sell_submission(&thread, request, &gate, now);
+
+        assert!(submission.is_err());
+    }
+
+    #[tokio::test]
+    async fn live_market_sell_executor_boundary_is_mockable() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        struct MockExecutor {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl LiveOrderExecutor for MockExecutor {
+            fn order_chance<'a>(
+                &'a self,
+                _access_key: &'a str,
+                _secret_key: &'a str,
+                market: &'a SupportedMarket,
+            ) -> Pin<Box<dyn Future<Output = Result<LiveOrderChance, String>> + Send + 'a>>
+            {
+                Box::pin(async move { Ok(sample_live_order_chance(market, 100_000.0, 1.0)) })
+            }
+
+            fn market_buy<'a>(
+                &'a self,
+                _access_key: &'a str,
+                _secret_key: &'a str,
+                _submission: &'a LiveMarketBuySubmission,
+            ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>>
+            {
+                Box::pin(async move { Err("unexpected buy call".to_string()) })
+            }
+
+            fn market_sell<'a>(
+                &'a self,
+                _access_key: &'a str,
+                _secret_key: &'a str,
+                submission: &'a LiveMarketSellSubmission,
+            ) -> Pin<Box<dyn Future<Output = Result<LiveOrderExecutionReceipt, String>> + Send + 'a>>
+            {
+                let calls = self.calls.clone();
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(LiveOrderExecutionReceipt {
+                        upbit_uuid: Some("mock-sell-order".to_string()),
+                        state: "done".to_string(),
+                        executed_volume: submission.volume.parse::<f64>().unwrap_or(0.0),
+                        executed_funds_krw: Some(25_000),
+                    })
+                })
+            }
+        }
+
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::InvestmentThread,
+                thread_id: Some(thread.id),
+                related_schedule_id: None,
+                market: thread.market.clone(),
+                intent: None,
+                amount_krw: 25_000,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Confirmed,
+                daily_trade_count: 0,
+                daily_trade_cap: thread.daily_trade_cap,
+                max_loss_percent: Some(thread.max_loss_percent),
+                latest_max_drawdown_percent: Some(4.0),
+                checked_at: now,
+            },
+            vec![],
+        );
+        let request = LiveMarketSellRequest {
+            thread_id: thread.id,
+            volume: "0.001".to_string(),
+            estimated_amount_krw: Some(25_000),
+            policy_reason: Some("manual_stop_policy".to_string()),
+        };
+        let submission = prepare_live_market_sell_submission(&thread, request, &gate, now)
+            .expect("sell submission");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = MockExecutor {
+            calls: calls.clone(),
+        };
+
+        let receipt = executor
+            .market_sell("access", "secret", &submission)
+            .await
+            .expect("mock sell receipt");
+        let submitted = build_live_market_sell_submitted_log(&submission);
+        let filled = build_live_market_sell_filled_log(&submission, &receipt);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(submitted.status, PurchaseStatus::Submitted);
+        assert_eq!(submitted.action, PurchaseLogAction::MarketSell);
+        assert_eq!(filled.status, PurchaseStatus::Filled);
+        assert_eq!(filled.action, PurchaseLogAction::MarketSell);
+        assert_eq!(filled.amount_krw, 25_000);
+        assert_eq!(filled.volume_btc, 0.001);
+    }
+
+    #[test]
+    fn live_order_chance_blocks_market_buy_when_balance_or_minimum_fails() {
+        let request = build_upbit_order_request(
+            &SupportedMarket::KrwBtc,
+            LiveOrderIntent::MarketBuy,
+            5_000,
+            None,
+        )
+        .expect("buy request");
+        let mut chance = sample_live_order_chance(&SupportedMarket::KrwBtc, 4_999.0, 1.0);
+        chance.bid_min_total_krw = Some(10_000);
+
+        let block_reasons =
+            live_order_chance_submission_block_reasons(&chance, &request.preview, 5_000);
+
+        assert!(block_reasons.contains(&LiveOrderGateBlockReason::InsufficientBalance));
+        assert!(block_reasons.contains(&LiveOrderGateBlockReason::MinimumOrderAmountNotMet));
+    }
+
+    #[test]
+    fn live_order_chance_blocks_when_market_order_type_is_unavailable() {
+        let request = build_upbit_order_request(
+            &SupportedMarket::KrwBtc,
+            LiveOrderIntent::MarketSell,
+            20_000,
+            Some("0.001".to_string()),
+        )
+        .expect("sell request");
+        let mut chance = sample_live_order_chance(&SupportedMarket::KrwBtc, 100_000.0, 1.0);
+        chance.ask_types = vec!["limit".to_string()];
+
+        let block_reasons =
+            live_order_chance_submission_block_reasons(&chance, &request.preview, 20_000);
+
+        assert!(block_reasons.contains(&LiveOrderGateBlockReason::MarketOrderUnavailable));
+    }
+
+    #[test]
+    fn live_order_chance_status_surfaces_permission_failures_for_settings() {
+        let status = build_live_order_chance_status(
+            &SupportedMarket::KrwBtc,
+            None,
+            vec![LiveOrderGateBlockReason::OrderPermissionDenied],
+            Some("HTTP 401 out_of_scope".to_string()),
+            Utc::now(),
+        );
+
+        assert!(!status.allowed);
+        assert!(status
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::OrderPermissionDenied));
+        assert!(status.reason.contains("권한"));
+        assert!(status.reason.contains("out_of_scope"));
+    }
+
+    #[test]
     fn real_upbit_order_submission_remains_isolated_and_unwired() {
         let source = include_str!("commands.rs");
-        let order_endpoint = concat!("https://api.upbit.com", "/v1/orders");
-        let market_buy_adapter = concat!("upbit", "_market_buy(");
+        let order_post_endpoint = concat!(".post(\"https://api.upbit.com", "/v1/orders\")");
+        let order_chance_endpoint = concat!(".get(\"https://api.upbit.com", "/v1/orders/chance\")");
+        let live_executor_impl = concat!("impl LiveOrderExecutor for ", "UpbitLiveOrderExecutor");
 
-        assert_eq!(source.matches(order_endpoint).count(), 1);
-        assert_eq!(source.matches(market_buy_adapter).count(), 1);
+        assert_eq!(source.matches(order_post_endpoint).count(), 1);
+        assert_eq!(source.matches(order_chance_endpoint).count(), 1);
+        assert_eq!(source.matches(live_executor_impl).count(), 1);
+        assert!(!source.contains(concat!("async fn ", "upbit_market_buy(")));
     }
 
     #[test]
