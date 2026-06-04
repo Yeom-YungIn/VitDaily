@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { InvestmentThread, PaperExecutionResult, StrategyProfile, SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
+import type { InvestmentThread, LiveMarketSellRequest, PaperExecutionResult, StrategyProfile, SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
 
 const markets: SupportedMarket[] = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
+const fallbackLiveConfirmationPhrase = "실거래 위험을 이해하고 Live 주문을 활성화합니다";
 const strategies: Array<{ value: StrategyProfile; label: string; description: string }> = [
   { value: "stable", label: "안정적", description: "저빈도 · 손실 제한 우선" },
   { value: "conservative", label: "보수적", description: "추세 + 평균회귀 균형" },
@@ -18,10 +19,16 @@ export default function Threads() {
   const [error, setError] = useState("");
   const [runningThreadId, setRunningThreadId] = useState<string | null>(null);
   const [paperRunningThreadId, setPaperRunningThreadId] = useState<string | null>(null);
+  const [liveBuyRunningThreadId, setLiveBuyRunningThreadId] = useState<string | null>(null);
+  const [liveSellRunningThreadId, setLiveSellRunningThreadId] = useState<string | null>(null);
   const [paperResult, setPaperResult] = useState<PaperExecutionResult | null>(null);
+  const [liveConfirmationPhrase, setLiveConfirmationPhrase] = useState(fallbackLiveConfirmationPhrase);
 
   useEffect(() => {
     loadThreads();
+    invoke<string>("get_live_activation_confirmation_phrase")
+      .then(setLiveConfirmationPhrase)
+      .catch(() => setLiveConfirmationPhrase(fallbackLiveConfirmationPhrase));
   }, []);
 
   async function loadThreads() {
@@ -88,6 +95,80 @@ export default function Threads() {
       setError(String(err));
     } finally {
       setPaperRunningThreadId(null);
+    }
+  }
+
+  async function handleActivate(thread: InvestmentThread, confirmationText: string) {
+    setError("");
+    try {
+      const updated = await invoke<InvestmentThread>("activate_thread_live", {
+        request: { threadId: thread.id, confirmationText },
+      });
+      setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setSelectedId(updated.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleStartLive(thread: InvestmentThread) {
+    setError("");
+    try {
+      const updated = await invoke<InvestmentThread>("start_thread_live", { threadId: thread.id });
+      setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setSelectedId(updated.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleSubmitLiveMarketBuy(thread: InvestmentThread) {
+    setError("");
+    setLiveBuyRunningThreadId(thread.id);
+    try {
+      await invoke("submit_thread_live_market_buy", { threadId: thread.id, amountKrw: null });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLiveBuyRunningThreadId(null);
+    }
+  }
+
+  async function handleSubmitLiveMarketSell(thread: InvestmentThread, volume: string) {
+    setError("");
+    setLiveSellRunningThreadId(thread.id);
+    try {
+      const request: LiveMarketSellRequest = {
+        threadId: thread.id,
+        volume,
+        estimatedAmountKrw: null,
+        policyReason: "manual_pause_stop_policy",
+      };
+      await invoke("submit_thread_live_market_sell", { request });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLiveSellRunningThreadId(null);
+    }
+  }
+
+  async function handlePause(thread: InvestmentThread) {
+    setError("");
+    try {
+      const updated = await invoke<InvestmentThread>("pause_thread", { threadId: thread.id });
+      setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleStop(thread: InvestmentThread) {
+    setError("");
+    try {
+      const updated = await invoke<InvestmentThread>("stop_thread", { threadId: thread.id });
+      setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (err) {
+      setError(String(err));
     }
   }
 
@@ -158,10 +239,19 @@ export default function Threads() {
         paperResult={paperResult?.threadId === selected?.id ? paperResult : null}
         isRunningBacktest={runningThreadId === selected?.id}
         isRunningPaper={paperRunningThreadId === selected?.id}
+        isRunningLiveBuy={liveBuyRunningThreadId === selected?.id}
+        isRunningLiveSell={liveSellRunningThreadId === selected?.id}
         onRunBacktest={handleRunBacktest}
         onRunPaper={handleRunPaper}
+        onActivate={handleActivate}
+        onStartLive={handleStartLive}
+        onSubmitLiveMarketBuy={handleSubmitLiveMarketBuy}
+        onSubmitLiveMarketSell={handleSubmitLiveMarketSell}
+        onPause={handlePause}
+        onStop={handleStop}
         onEdit={(thread) => { setEditTarget(thread); setShowForm(true); }}
         onDelete={handleDelete}
+        liveConfirmationPhrase={liveConfirmationPhrase}
       />
 
       {showForm && <ThreadForm initial={editTarget} onSave={handleSave} onCancel={() => { setShowForm(false); setEditTarget(null); }} />}
@@ -203,6 +293,7 @@ function ThreadForm({ initial, onSave, onCancel }: { initial: InvestmentThread |
       dailyTradeCap: cap,
       status: initial?.status ?? "draft",
       validationStatus: initial?.validationStatus ?? "missing",
+      finalConfirmationStatus: initial?.finalConfirmationStatus ?? "missing",
       createdAt: initial?.createdAt ?? now,
       updatedAt: now,
     });
@@ -259,7 +350,7 @@ function ThreadForm({ initial, onSave, onCancel }: { initial: InvestmentThread |
         </div>
 
         <div className="mt-5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-100">
-          실거래 활성화는 백테스트/모의투자, 글로벌 Live Lock, 최종 확인 단계가 구현된 뒤에만 가능합니다.
+          실거래 준비 전환은 백테스트 통과, 글로벌 Live Lock 해제, API 키, 전략 승인, 최종 확인을 모두 요구합니다.
         </div>
         {error && <p className="mt-3 text-xs text-red-300">{error}</p>}
 
@@ -278,29 +369,66 @@ function ThreadDetail({
   paperResult,
   isRunningBacktest,
   isRunningPaper,
+  isRunningLiveBuy,
+  isRunningLiveSell,
   onRunBacktest,
   onRunPaper,
+  onActivate,
+  onStartLive,
+  onSubmitLiveMarketBuy,
+  onSubmitLiveMarketSell,
+  onPause,
+  onStop,
   onEdit,
   onDelete,
+  liveConfirmationPhrase,
 }: {
   thread: InvestmentThread | null;
   validationResult: ThreadValidationResult | null;
   paperResult: PaperExecutionResult | null;
   isRunningBacktest: boolean;
   isRunningPaper: boolean;
+  isRunningLiveBuy: boolean;
+  isRunningLiveSell: boolean;
   onRunBacktest: (thread: InvestmentThread) => void;
   onRunPaper: (thread: InvestmentThread) => void;
+  onActivate: (thread: InvestmentThread, confirmationText: string) => void;
+  onStartLive: (thread: InvestmentThread) => void;
+  onSubmitLiveMarketBuy: (thread: InvestmentThread) => void;
+  onSubmitLiveMarketSell: (thread: InvestmentThread, volume: string) => void;
+  onPause: (thread: InvestmentThread) => void;
+  onStop: (thread: InvestmentThread) => void;
   onEdit: (thread: InvestmentThread) => void;
   onDelete: (id: string) => void;
+  liveConfirmationPhrase: string;
 }) {
+  const [confirmationText, setConfirmationText] = useState("");
+  const [sellVolume, setSellVolume] = useState("");
+  useEffect(() => {
+    setConfirmationText("");
+    setSellVolume("");
+  }, [thread?.id, thread?.finalConfirmedAt]);
+
   if (!thread) {
     return (
       <section className="rounded-xl border border-slate-700 bg-slate-800/80 p-6">
         <p className="text-sm text-slate-300">스레드를 선택하거나 새로 생성하세요.</p>
-        <p className="mt-2 text-xs text-slate-500">Product Foundation Sprint에서는 실거래 없이 데이터 모델과 UI 흐름을 먼저 구축합니다.</p>
+        <p className="mt-2 text-xs text-slate-500">Live readiness 단계에서는 기본 차단 상태에서 검증과 확인을 통과한 스레드만 준비 상태로 전환합니다.</p>
       </section>
     );
   }
+
+  const confirmationMatches = confirmationText.trim() === liveConfirmationPhrase;
+  const finalConfirmationSaved = thread.finalConfirmationStatus === "confirmed"
+    && thread.finalConfirmationText === liveConfirmationPhrase
+    && Boolean(thread.finalConfirmedAt);
+  const canRequestActivation = ["draft", "paper", "paused", "armed"].includes(thread.status) && thread.validationStatus === "pass";
+  const canStartLive = thread.status === "armed" && thread.validationStatus === "pass" && finalConfirmationSaved;
+  const canSubmitLiveBuy = thread.status === "live" && finalConfirmationSaved;
+  const canSubmitLiveSell = canSubmitLiveBuy && Number(sellVolume) > 0;
+  const canPause = thread.status === "armed" || thread.status === "live";
+  const canStop = !["stopped", "completed"].includes(thread.status);
+  const readinessBlockers = liveReadinessBlockers(thread, validationResult, finalConfirmationSaved);
 
   return (
     <section className="rounded-xl border border-slate-700 bg-slate-800/80 p-5">
@@ -353,10 +481,88 @@ function ThreadDetail({
 
       <div className="mt-5 rounded-lg bg-slate-900/60 p-4">
         <h3 className="text-sm font-semibold text-slate-200">Live 활성화</h3>
-        <button disabled className="mt-3 w-full rounded bg-slate-700 px-4 py-2 text-sm text-slate-400 opacity-70">
-            실거래 활성화 비활성화
+        <div className="mt-3 rounded border border-red-500/20 bg-red-500/5 px-3 py-3 text-xs text-red-100">
+          <p>{thread.market} · {thread.initialBudgetKrw.toLocaleString()}원 · {strategyLabel(thread.strategyProfile)} · 최대 손실 {thread.maxLossPercent}% · 일일 {thread.dailyTradeCap}회</p>
+          <p className="mt-3 text-slate-300">아래 문구를 정확히 입력하면 이 스레드에 최종 확인 증거가 저장되고 Armed 상태로 전환됩니다.</p>
+          <code className="mt-2 block select-all rounded bg-slate-950/70 px-3 py-2 text-[11px] text-red-100">{liveConfirmationPhrase}</code>
+          <input
+            value={confirmationText}
+            onChange={(event) => setConfirmationText(event.target.value)}
+            placeholder={liveConfirmationPhrase}
+            className="mt-3 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 outline-none focus:border-red-400"
+          />
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+            <span className={`rounded px-2 py-1 ${confirmationMatches ? "bg-green-500/10 text-green-200" : "bg-slate-800 text-slate-400"}`}>
+              입력 문구 {confirmationMatches ? "일치" : "대기"}
+            </span>
+            <span className={`rounded px-2 py-1 ${finalConfirmationSaved ? "bg-green-500/10 text-green-200" : "bg-slate-800 text-slate-400"}`}>
+              저장 확인 {finalConfirmationSaved ? "완료" : "없음"}
+            </span>
+          </div>
+          {readinessBlockers.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {readinessBlockers.map((blocker) => (
+                <span key={blocker} className="rounded bg-red-500/10 px-2 py-1 text-[11px] text-red-100">
+                  {blocker}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="mt-3 text-[11px] text-slate-400">Global Lock, API 권한, /orders/chance 잔고와 주문 가능성은 제출 시 Gate에서 다시 확인합니다.</p>
+        </div>
+        <button
+          onClick={() => onActivate(thread, confirmationText)}
+          disabled={!canRequestActivation || !confirmationMatches}
+          className="mt-3 w-full rounded bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+        >
+          Armed 준비
         </button>
-        <p className="mt-2 text-xs text-slate-500">백테스트 통과, 글로벌 Live Lock, 최종 확인 전에는 활성화할 수 없습니다.</p>
+        <button
+          onClick={() => onStartLive(thread)}
+          disabled={!canStartLive}
+          className="mt-2 w-full rounded bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+        >
+          Live 시작
+        </button>
+        <button
+          onClick={() => onSubmitLiveMarketBuy(thread)}
+          disabled={!canSubmitLiveBuy || isRunningLiveBuy}
+          className="mt-2 w-full rounded bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+        >
+          {isRunningLiveBuy ? "Live 시장가 매수 제출 중..." : "Live 시장가 매수 제출"}
+        </button>
+        <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+          <input
+            value={sellVolume}
+            onChange={(event) => setSellVolume(event.target.value)}
+            placeholder="매도 BTC volume"
+            className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 outline-none focus:border-red-400"
+          />
+          <button
+            onClick={() => onSubmitLiveMarketSell(thread, sellVolume)}
+            disabled={!canSubmitLiveSell || isRunningLiveSell}
+            className="rounded bg-red-800 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          >
+            {isRunningLiveSell ? "매도 제출 중..." : "Live 시장가 매도"}
+          </button>
+        </div>
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={() => onPause(thread)}
+            disabled={!canPause}
+            className="flex-1 rounded bg-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-600 disabled:cursor-not-allowed disabled:text-slate-500"
+          >
+            일시정지
+          </button>
+          <button
+            onClick={() => onStop(thread)}
+            disabled={!canStop}
+            className="flex-1 rounded bg-slate-700 px-3 py-2 text-xs text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:text-slate-500"
+          >
+            긴급 중지
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-slate-500">최종 주문 제출은 별도 Live Order Gate와 Upbit payload preview 테스트 뒤에만 가능하며 기본값은 차단입니다.</p>
       </div>
 
       {paperResult && (
@@ -412,6 +618,26 @@ function ThreadDetail({
       )}
     </section>
   );
+}
+
+function liveReadinessBlockers(thread: InvestmentThread, validationResult: ThreadValidationResult | null, finalConfirmationSaved: boolean): string[] {
+  const blockers: string[] = [];
+  if (thread.validationStatus !== "pass" || validationResult?.status !== "pass") {
+    blockers.push("백테스트 통과 필요");
+  }
+  if (["stopped", "completed"].includes(thread.status)) {
+    blockers.push("종료된 스레드는 Live 차단");
+  }
+  if (!["draft", "paper", "paused", "armed", "live"].includes(thread.status)) {
+    blockers.push("지원하지 않는 스레드 상태");
+  }
+  if (!finalConfirmationSaved) {
+    blockers.push("최종 확인 저장 필요");
+  }
+  if (thread.status !== "armed" && thread.status !== "live") {
+    blockers.push("주문 전 Armed/Live 전환 필요");
+  }
+  return blockers;
 }
 
 function Field({ label, className = "", children }: { label: string; className?: string; children: ReactNode }) {

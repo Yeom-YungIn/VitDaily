@@ -1,16 +1,22 @@
 use crate::types::{
     ApiStatus, AppSettings, AuditCategory, ExecutionMode, InvestmentThread,
-    LiveOrderFinalConfirmationStatus, LiveOrderGateBlockReason, LiveOrderGateCheck,
-    LiveOrderGateDecision, LiveOrderGateSource, PaperExecutionResult, PaperSignalAction,
-    PortfolioAllocation, PortfolioAnalytics, PortfolioPointSource, PortfolioSnapshot,
-    PortfolioSummary, PortfolioTimePoint, PurchaseLog, PurchaseLogAction, PurchaseLogSource,
-    PurchaseStatus, SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile,
-    StrategyProfileInfo, StrategySignalEvaluation, SupportedMarket, ThreadAnalytics, ThreadStatus,
-    ThreadValidationResult, ValidationStatus,
+    LegacyScheduleLivePolicy, LegacyScheduleLivePolicyStatus, LiveActivationRequest,
+    LiveMarketSellRequest, LiveOrderChanceStatus, LiveOrderFinalConfirmationStatus,
+    LiveOrderGateBlockReason, LiveOrderGateCheck, LiveOrderGateDecision, LiveOrderGateSource,
+    LiveOrderIntent, PaperExecutionResult, PaperSignalAction, PortfolioAllocation,
+    PortfolioAnalytics, PortfolioPointSource, PortfolioSnapshot, PortfolioSummary,
+    PortfolioTimePoint, PurchaseLog, PurchaseLogAction, PurchaseLogSource, PurchaseStatus,
+    SafetyEvent, SafetyEventType, Schedule, StorageEnvelope, StrategyProfile, StrategyProfileInfo,
+    StrategySignalEvaluation, SupportedMarket, ThreadAnalytics, ThreadStatus,
+    ThreadValidationResult, UpbitOrderPayloadPreview, ValidationStatus,
 };
 use chrono::{Local, NaiveTime, Timelike, Utc};
 use keyring::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    pin::Pin,
+};
 use tauri::{command, AppHandle, Runtime};
 use tauri_plugin_notification::NotificationExt;
 use tokio::time::{interval, Duration};
@@ -19,6 +25,9 @@ const KEYRING_SERVICE: &str = "vitdaily";
 const KEYRING_ACCESS_KEY: &str = "upbit_access_key";
 const KEYRING_SECRET_KEY: &str = "upbit_secret_key";
 const DEFAULT_DAILY_TRADE_CAP: u32 = 10;
+const DEFAULT_LIVE_SELL_GATE_AMOUNT_KRW: u64 = 5_000;
+const DEFAULT_LIVE_CHANCE_PROBE_AMOUNT_KRW: u64 = 5_000;
+const REQUIRED_LIVE_CONFIRMATION_PHRASE: &str = "실거래 위험을 이해하고 Live 주문을 활성화합니다";
 
 // --- API Credentials ---
 
@@ -378,6 +387,316 @@ pub async fn get_safety_events() -> Result<Vec<SafetyEvent>, String> {
     Ok(events)
 }
 
+#[command]
+pub fn get_live_activation_confirmation_phrase() -> String {
+    REQUIRED_LIVE_CONFIRMATION_PHRASE.to_string()
+}
+
+#[command]
+pub async fn activate_thread_live(
+    request: LiveActivationRequest,
+) -> Result<InvestmentThread, String> {
+    let confirmation_text = validate_live_confirmation_text(&request.confirmation_text)?;
+
+    let mut threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter_mut()
+        .find(|thread| thread.id == request.thread_id)
+        .ok_or_else(|| "활성화할 스레드를 찾을 수 없습니다".to_string())?;
+
+    if !matches!(
+        thread.status,
+        ThreadStatus::Draft | ThreadStatus::Paper | ThreadStatus::Paused | ThreadStatus::Armed
+    ) {
+        return Err(
+            "Draft, Paper, Paused, Armed 상태의 스레드만 실거래 준비 상태로 전환할 수 있습니다"
+                .to_string(),
+        );
+    }
+
+    if thread.validation_status != ValidationStatus::Pass {
+        return Err("백테스트를 통과한 스레드만 실거래 준비 상태로 전환할 수 있습니다".to_string());
+    }
+
+    let previous_thread = thread.clone();
+    let confirmed_at = Utc::now();
+    let mut activation_candidate = thread.clone();
+    apply_live_confirmation(&mut activation_candidate, confirmation_text, confirmed_at);
+    activation_candidate.status = ThreadStatus::Armed;
+    activation_candidate.updated_at = confirmed_at;
+
+    let gate = evaluate_live_order_gate(LiveOrderGateInput::investment_thread(
+        &activation_candidate,
+        paper_order_amount_krw(&activation_candidate),
+        confirmed_at,
+    ));
+    if !gate.allowed {
+        let _ = record_safety_event(
+            Some(activation_candidate.id),
+            SafetyEventDraft {
+                event_type: SafetyEventType::Blocked,
+                category: AuditCategory::SafetyGate,
+                source: Some("live_activation".to_string()),
+                related_schedule_id: None,
+                reason: Some(gate.reason.clone()),
+            },
+            format!(
+                "{} 실거래 준비 상태 전환 차단 · {}",
+                activation_candidate.market.as_upbit_market(),
+                gate.reason
+            ),
+        );
+        return Err(gate.reason);
+    }
+
+    record_safety_event(
+        Some(activation_candidate.id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::SafetyGate,
+            source: Some("live_activation".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=attempt; previousStatus={:?}; newStatus=Armed; previousFinalConfirmation={:?}; newFinalConfirmation=Confirmed; finalConfirmedAt={}; gate={}",
+                previous_thread.status,
+                previous_thread.final_confirmation_status,
+                confirmed_at.to_rfc3339(),
+                gate.reason
+            )),
+        },
+        format!(
+            "{} 실거래 준비 상태 전환 시도 · {}",
+            activation_candidate.market.as_upbit_market(),
+            gate.reason
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    *thread = activation_candidate.clone();
+    let activated = activation_candidate;
+    persist_investment_threads(&threads).map_err(|e| e.to_string())?;
+
+    if let Err(error) = record_safety_event(
+        Some(activated.id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::SafetyGate,
+            source: Some("live_activation".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=success; previousStatus={:?}; newStatus=Armed; previousFinalConfirmation={:?}; newFinalConfirmation=Confirmed; finalConfirmedAt={}; gate={}",
+                previous_thread.status,
+                previous_thread.final_confirmation_status,
+                confirmed_at.to_rfc3339(),
+                gate.reason
+            )),
+        },
+        format!(
+            "{} 실거래 준비 상태 전환 성공 · {}",
+            activated.market.as_upbit_market(),
+            gate.reason
+        ),
+    ) {
+        if let Some(saved) = threads.iter_mut().find(|thread| thread.id == activated.id) {
+            *saved = previous_thread;
+        }
+        let _ = persist_investment_threads(&threads);
+        return Err(error.to_string());
+    }
+
+    Ok(activated)
+}
+
+#[command]
+pub async fn start_thread_live(thread_id: String) -> Result<InvestmentThread, String> {
+    let uuid = thread_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| "잘못된 스레드 ID".to_string())?;
+    let mut threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter_mut()
+        .find(|thread| thread.id == uuid)
+        .ok_or_else(|| "Live로 전환할 스레드를 찾을 수 없습니다".to_string())?;
+
+    if thread.status != ThreadStatus::Armed {
+        return Err("Armed 상태의 스레드만 Live로 전환할 수 있습니다".to_string());
+    }
+    if thread.validation_status != ValidationStatus::Pass {
+        return Err("백테스트를 통과한 스레드만 Live로 전환할 수 있습니다".to_string());
+    }
+    if !thread_has_valid_live_confirmation(thread) {
+        return Err("저장된 최종 확인 문구가 유효하지 않아 Live 전환을 차단했습니다".to_string());
+    }
+
+    let previous_thread = thread.clone();
+    let live_started_at = Utc::now();
+    let mut live_candidate = thread.clone();
+    live_candidate.status = ThreadStatus::Live;
+    live_candidate.updated_at = live_started_at;
+
+    let gate = evaluate_live_order_gate(LiveOrderGateInput::investment_thread(
+        &live_candidate,
+        paper_order_amount_krw(&live_candidate),
+        live_started_at,
+    ));
+    if !gate.allowed {
+        let _ = record_safety_event(
+            Some(live_candidate.id),
+            SafetyEventDraft {
+                event_type: SafetyEventType::Blocked,
+                category: AuditCategory::SafetyGate,
+                source: Some("live_start".to_string()),
+                related_schedule_id: None,
+                reason: Some(gate.reason.clone()),
+            },
+            format!(
+                "{} Live 전환 차단 · {}",
+                live_candidate.market.as_upbit_market(),
+                gate.reason
+            ),
+        );
+        return Err(gate.reason);
+    }
+
+    record_safety_event(
+        Some(live_candidate.id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::SafetyGate,
+            source: Some("live_start".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=attempt; previousStatus={:?}; newStatus=Live; finalConfirmation={:?}; finalConfirmedAt={}; gate={}",
+                previous_thread.status,
+                previous_thread.final_confirmation_status,
+                previous_thread
+                    .final_confirmed_at
+                    .as_ref()
+                    .map(|timestamp| timestamp.to_rfc3339())
+                    .unwrap_or_else(|| "missing".to_string()),
+                gate.reason
+            )),
+        },
+        format!(
+            "{} Live 전환 시도 · {}",
+            live_candidate.market.as_upbit_market(),
+            gate.reason
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    *thread = live_candidate.clone();
+    let live_thread = live_candidate;
+    persist_investment_threads(&threads).map_err(|e| e.to_string())?;
+
+    if let Err(error) = record_safety_event(
+        Some(live_thread.id),
+        SafetyEventDraft {
+            event_type: SafetyEventType::Info,
+            category: AuditCategory::SafetyGate,
+            source: Some("live_start".to_string()),
+            related_schedule_id: None,
+            reason: Some(format!(
+                "outcome=success; previousStatus={:?}; newStatus=Live; finalConfirmation={:?}; finalConfirmedAt={}; gate={}",
+                previous_thread.status,
+                previous_thread.final_confirmation_status,
+                previous_thread
+                    .final_confirmed_at
+                    .as_ref()
+                    .map(|timestamp| timestamp.to_rfc3339())
+                    .unwrap_or_else(|| "missing".to_string()),
+                gate.reason
+            )),
+        },
+        format!(
+            "{} Live 전환 성공 · {}",
+            live_thread.market.as_upbit_market(),
+            gate.reason
+        ),
+    ) {
+        if let Some(saved) = threads.iter_mut().find(|thread| thread.id == live_thread.id) {
+            *saved = previous_thread;
+        }
+        let _ = persist_investment_threads(&threads);
+        return Err(error.to_string());
+    }
+
+    Ok(live_thread)
+}
+
+#[command]
+pub async fn pause_thread(thread_id: String) -> Result<InvestmentThread, String> {
+    transition_thread_to_safety_state(
+        thread_id,
+        ThreadStatus::Paused,
+        SafetyEventType::Warning,
+        "manual_pause",
+        "스레드를 일시정지했습니다",
+    )
+}
+
+#[command]
+pub async fn stop_thread(thread_id: String) -> Result<InvestmentThread, String> {
+    transition_thread_to_safety_state(
+        thread_id,
+        ThreadStatus::Stopped,
+        SafetyEventType::Stopped,
+        "manual_stop",
+        "스레드를 중지했고 이후 실주문을 차단합니다",
+    )
+}
+
+#[command]
+pub async fn preview_thread_live_order_payload(
+    thread_id: String,
+    intent: LiveOrderIntent,
+    amount_krw: Option<u64>,
+    volume: Option<String>,
+) -> Result<UpbitOrderPayloadPreview, String> {
+    let uuid = thread_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| "잘못된 스레드 ID".to_string())?;
+    let threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter()
+        .find(|thread| thread.id == uuid)
+        .cloned()
+        .ok_or_else(|| "실주문 미리보기를 생성할 스레드를 찾을 수 없습니다".to_string())?;
+    let order_amount = amount_krw.unwrap_or_else(|| paper_order_amount_krw(&thread));
+    let gate = evaluate_live_order_gate(LiveOrderGateInput::investment_thread(
+        &thread,
+        order_amount,
+        Utc::now(),
+    ));
+
+    if !gate.allowed {
+        let safety_event_id = record_live_order_gate_block_event(&gate).ok();
+        let mut logs = load_logs().map_err(|e| e.to_string())?;
+        logs.push(build_live_order_blocked_log(&gate, safety_event_id));
+        persist_logs(&logs).map_err(|e| e.to_string())?;
+        return Err(gate.reason);
+    }
+
+    build_upbit_order_payload_preview(&thread.market, intent, order_amount, volume)
+}
+
+#[command]
+pub async fn submit_thread_live_market_buy(
+    thread_id: String,
+    amount_krw: Option<u64>,
+) -> Result<Vec<PurchaseLog>, String> {
+    let executor = UpbitLiveOrderExecutor;
+    submit_thread_live_market_buy_with_executor(thread_id, amount_krw, &executor).await
+}
+
+#[command]
+pub async fn submit_thread_live_market_sell(
+    request: LiveMarketSellRequest,
+) -> Result<Vec<PurchaseLog>, String> {
+    let executor = UpbitLiveOrderExecutor;
+    submit_thread_live_market_sell_with_executor(request, &executor).await
+}
+
 // --- Settings ---
 
 #[command]
@@ -395,6 +714,58 @@ pub async fn set_notifications_enabled(
     settings.notification_permission_requested =
         settings.notification_permission_requested || permission_requested.unwrap_or(false);
     persist_settings(&settings).map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+#[command]
+pub async fn set_live_trading_settings(
+    global_live_locked: bool,
+    strategy_logic_approved: bool,
+) -> Result<AppSettings, String> {
+    let mut settings = load_settings().map_err(|e| e.to_string())?;
+    let changed = settings.global_live_locked != global_live_locked
+        || settings.strategy_logic_approved != strategy_logic_approved;
+    let previous_global_live_locked = settings.global_live_locked;
+    let previous_strategy_logic_approved = settings.strategy_logic_approved;
+    if changed {
+        record_safety_event(
+            None,
+            SafetyEventDraft {
+                event_type: SafetyEventType::Info,
+                category: AuditCategory::SafetyGate,
+                source: Some("live_trading_settings".to_string()),
+                related_schedule_id: None,
+                reason: Some(format!(
+                    "outcome=attempt; previousGlobalLiveLocked={previous_global_live_locked}, newGlobalLiveLocked={global_live_locked}, previousStrategyLogicApproved={previous_strategy_logic_approved}, newStrategyLogicApproved={strategy_logic_approved}"
+                )),
+            },
+            "Live Trading 설정 변경 시도".to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    settings.global_live_locked = global_live_locked;
+    settings.strategy_logic_approved = strategy_logic_approved;
+    persist_settings(&settings).map_err(|e| e.to_string())?;
+    if changed {
+        if let Err(error) = record_safety_event(
+            None,
+            SafetyEventDraft {
+                event_type: SafetyEventType::Info,
+                category: AuditCategory::SafetyGate,
+                source: Some("live_trading_settings".to_string()),
+                related_schedule_id: None,
+                reason: Some(format!(
+                    "outcome=success; previousGlobalLiveLocked={previous_global_live_locked}, newGlobalLiveLocked={global_live_locked}, previousStrategyLogicApproved={previous_strategy_logic_approved}, newStrategyLogicApproved={strategy_logic_approved}"
+                )),
+            },
+            "Live Trading 설정 변경 성공".to_string(),
+        ) {
+            settings.global_live_locked = previous_global_live_locked;
+            settings.strategy_logic_approved = previous_strategy_logic_approved;
+            let _ = persist_settings(&settings);
+            return Err(error.to_string());
+        }
+    }
     Ok(settings)
 }
 
@@ -491,7 +862,8 @@ fn load_settings() -> anyhow::Result<AppSettings> {
     }
 
     let content = std::fs::read_to_string(path)?;
-    let should_persist_migration = !content.contains("\"globalLiveLocked\"");
+    let should_persist_migration =
+        !content.contains("\"globalLiveLocked\"") || !content.contains("\"strategyLogicApproved\"");
     let mut settings: AppSettings = serde_json::from_str(&content)?;
     let mut settings_changed = should_persist_migration;
     if settings.notifications_enabled && !settings.notification_permission_requested {
@@ -536,6 +908,59 @@ fn load_thread_validation_results() -> anyhow::Result<Vec<ThreadValidationResult
 
 fn persist_thread_validation_results(results: &[ThreadValidationResult]) -> anyhow::Result<()> {
     persist_enveloped_vec("thread-validations.json", results)
+}
+
+fn transition_thread_to_safety_state(
+    thread_id: String,
+    status: ThreadStatus,
+    event_type: SafetyEventType,
+    source: &str,
+    message: &str,
+) -> Result<InvestmentThread, String> {
+    let uuid = thread_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| "잘못된 스레드 ID".to_string())?;
+    let mut threads = load_investment_threads().map_err(|e| e.to_string())?;
+    let thread = threads
+        .iter_mut()
+        .find(|thread| thread.id == uuid)
+        .ok_or_else(|| "상태를 변경할 스레드를 찾을 수 없습니다".to_string())?;
+    validate_thread_safety_transition(&thread.status, &status)?;
+
+    thread.status = status;
+    clear_live_confirmation(thread);
+    thread.updated_at = Utc::now();
+    let updated = thread.clone();
+    persist_investment_threads(&threads).map_err(|e| e.to_string())?;
+
+    let _ = record_safety_event(
+        Some(updated.id),
+        SafetyEventDraft {
+            event_type,
+            category: AuditCategory::SafetyGate,
+            source: Some(source.to_string()),
+            related_schedule_id: None,
+            reason: Some(message.to_string()),
+        },
+        format!("{} · {}", updated.name, message),
+    );
+
+    Ok(updated)
+}
+
+fn validate_thread_safety_transition(
+    current: &ThreadStatus,
+    target: &ThreadStatus,
+) -> Result<(), String> {
+    if matches!(current, ThreadStatus::Completed) {
+        return Err("완료된 스레드는 상태를 변경할 수 없습니다".to_string());
+    }
+    if matches!(current, ThreadStatus::Stopped) && !matches!(target, ThreadStatus::Stopped) {
+        return Err(
+            "중지된 스레드는 별도 재활성화 흐름 없이 상태를 변경할 수 없습니다".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn persist_portfolio_snapshots(snapshots: &[PortfolioTimePoint]) -> anyhow::Result<()> {
@@ -853,6 +1278,39 @@ fn validate_investment_thread(thread: &InvestmentThread) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_live_confirmation_text(text: &str) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed != REQUIRED_LIVE_CONFIRMATION_PHRASE {
+        return Err(format!(
+            "최종 확인 문구를 정확히 입력해주세요: {}",
+            REQUIRED_LIVE_CONFIRMATION_PHRASE
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn apply_live_confirmation(
+    thread: &mut InvestmentThread,
+    confirmation_text: String,
+    confirmed_at: chrono::DateTime<Utc>,
+) {
+    thread.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
+    thread.final_confirmation_text = Some(confirmation_text);
+    thread.final_confirmed_at = Some(confirmed_at);
+}
+
+fn clear_live_confirmation(thread: &mut InvestmentThread) {
+    thread.final_confirmation_status = LiveOrderFinalConfirmationStatus::Missing;
+    thread.final_confirmation_text = None;
+    thread.final_confirmed_at = None;
+}
+
+fn thread_has_valid_live_confirmation(thread: &InvestmentThread) -> bool {
+    thread.final_confirmation_status == LiveOrderFinalConfirmationStatus::Confirmed
+        && thread.final_confirmation_text.as_deref() == Some(REQUIRED_LIVE_CONFIRMATION_PHRASE)
+        && thread.final_confirmed_at.is_some()
+}
+
 fn merge_investment_thread(
     existing: Option<&InvestmentThread>,
     mut incoming: InvestmentThread,
@@ -871,7 +1329,7 @@ fn merge_investment_thread(
             incoming.updated_at = now;
             incoming.status = existing.status.clone();
             incoming.validation_status = existing.validation_status.clone();
-            incoming.final_confirmation_status = LiveOrderFinalConfirmationStatus::Missing;
+            clear_live_confirmation(&mut incoming);
 
             if matches!(existing.status, ThreadStatus::Armed | ThreadStatus::Live) {
                 incoming.status = ThreadStatus::Draft;
@@ -887,7 +1345,7 @@ fn merge_investment_thread(
             incoming.updated_at = now;
             incoming.status = ThreadStatus::Draft;
             incoming.validation_status = ValidationStatus::Missing;
-            incoming.final_confirmation_status = LiveOrderFinalConfirmationStatus::Missing;
+            clear_live_confirmation(&mut incoming);
             incoming
         }
     }
@@ -1314,11 +1772,11 @@ fn evaluate_live_order_gate_with_data(
                 return live_order_gate_decision(check, block_reasons);
             };
 
-            if !matches!(thread.status, ThreadStatus::Live) {
+            if !matches!(thread.status, ThreadStatus::Armed | ThreadStatus::Live) {
                 block_reasons.push(LiveOrderGateBlockReason::LiveModeNotEnabled);
             }
 
-            if thread.final_confirmation_status != LiveOrderFinalConfirmationStatus::Confirmed {
+            if !thread_has_valid_live_confirmation(thread) {
                 block_reasons.push(LiveOrderGateBlockReason::FinalConfirmationMissing);
             }
 
@@ -1424,6 +1882,8 @@ fn live_order_block_reason_text(reason: &LiveOrderGateBlockReason) -> &'static s
         LiveOrderGateBlockReason::GlobalLiveLocked => {
             "Global Live Lock이 잠겨 있어 실주문이 차단되었습니다"
         }
+        LiveOrderGateBlockReason::CredentialsMissing => "Upbit API 키 확인이 필요합니다",
+        LiveOrderGateBlockReason::StrategyLogicNotApproved => "전략 로직 실거래 승인이 필요합니다",
         LiveOrderGateBlockReason::FinalConfirmationMissing => "최종 확인이 필요합니다",
         LiveOrderGateBlockReason::LiveModeNotEnabled => "스레드가 실거래 상태가 아닙니다",
         LiveOrderGateBlockReason::DailyTradeCapExceeded => "일일 거래 한도에 도달했습니다",
@@ -1439,6 +1899,21 @@ fn live_order_block_reason_text(reason: &LiveOrderGateBlockReason) -> &'static s
         }
         LiveOrderGateBlockReason::AuditDataUnavailable => {
             "거래/검증 감사 데이터 로드 실패로 안전 기본값을 적용했습니다"
+        }
+        LiveOrderGateBlockReason::InsufficientBalance => {
+            "Upbit 사용 가능 잔고가 주문 금액 또는 수량보다 부족합니다"
+        }
+        LiveOrderGateBlockReason::MinimumOrderAmountNotMet => {
+            "Upbit 최소 주문금액 기준을 충족하지 못했습니다"
+        }
+        LiveOrderGateBlockReason::MarketOrderUnavailable => {
+            "해당 마켓에서 요청한 시장가 주문 유형을 지원하지 않습니다"
+        }
+        LiveOrderGateBlockReason::OrderPermissionDenied => {
+            "Upbit 주문 권한 또는 주문 가능 정보 조회 권한 확인에 실패했습니다"
+        }
+        LiveOrderGateBlockReason::OrderChanceUnavailable => {
+            "Upbit 주문 가능 정보 조회 결과를 사용할 수 없어 안전 기본값을 적용했습니다"
         }
     }
 }
@@ -1741,6 +2216,7 @@ mod tests {
             serde_json::from_str(r#"{"notificationsEnabled":false}"#).expect("parse settings");
 
         assert!(settings.global_live_locked);
+        assert!(!settings.strategy_logic_approved);
     }
 
     #[test]
@@ -1759,6 +2235,8 @@ mod tests {
             saved.final_confirmation_status,
             LiveOrderFinalConfirmationStatus::Missing
         );
+        assert_eq!(saved.final_confirmation_text, None);
+        assert_eq!(saved.final_confirmed_at, None);
     }
 
     #[test]
@@ -1784,8 +2262,31 @@ mod tests {
             saved.final_confirmation_status,
             LiveOrderFinalConfirmationStatus::Missing
         );
+        assert_eq!(saved.final_confirmation_text, None);
+        assert_eq!(saved.final_confirmed_at, None);
         assert_eq!(saved.created_at, created_at);
         assert_eq!(saved.updated_at, now);
+    }
+
+    #[test]
+    fn completed_thread_is_terminal_for_safety_transitions() {
+        assert!(validate_thread_safety_transition(
+            &ThreadStatus::Completed,
+            &ThreadStatus::Stopped
+        )
+        .is_err());
+        assert!(
+            validate_thread_safety_transition(&ThreadStatus::Completed, &ThreadStatus::Paused)
+                .is_err()
+        );
+        assert!(
+            validate_thread_safety_transition(&ThreadStatus::Stopped, &ThreadStatus::Paused)
+                .is_err()
+        );
+        assert!(
+            validate_thread_safety_transition(&ThreadStatus::Stopped, &ThreadStatus::Stopped)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1815,6 +2316,29 @@ mod tests {
             thread.final_confirmation_status,
             LiveOrderFinalConfirmationStatus::Missing
         );
+        assert_eq!(thread.final_confirmation_text, None);
+        assert_eq!(thread.final_confirmed_at, None);
+    }
+
+    #[test]
+    fn final_confirmation_phrase_must_match_exactly() {
+        assert!(validate_live_confirmation_text(REQUIRED_LIVE_CONFIRMATION_PHRASE).is_ok());
+        assert!(validate_live_confirmation_text("실거래 위험 확인").is_err());
+    }
+
+    #[test]
+    fn final_confirmation_requires_saved_phrase_and_timestamp() {
+        let now = Utc::now();
+        let mut thread = sample_thread(now);
+        thread.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
+
+        assert!(!thread_has_valid_live_confirmation(&thread));
+
+        thread.final_confirmation_text = Some(REQUIRED_LIVE_CONFIRMATION_PHRASE.to_string());
+        assert!(!thread_has_valid_live_confirmation(&thread));
+
+        thread.final_confirmed_at = Some(now);
+        assert!(thread_has_valid_live_confirmation(&thread));
     }
 
     #[test]
@@ -1908,6 +2432,8 @@ mod tests {
             status: ThreadStatus::Draft,
             validation_status: ValidationStatus::Missing,
             final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
+            final_confirmation_text: None,
+            final_confirmed_at: None,
             created_at: now,
             updated_at: now,
         }
@@ -1958,6 +2484,7 @@ mod tests {
                 thread_id: None,
                 related_schedule_id: Some(schedule.id),
                 market: SupportedMarket::KrwBtc,
+                intent: None,
                 amount_krw: schedule.amount,
                 final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
                 daily_trade_count: 0,
@@ -2137,6 +2664,7 @@ mod tests {
                 thread_id: Some(thread.id),
                 related_schedule_id: None,
                 market: thread.market.clone(),
+                intent: None,
                 amount_krw: 5_000,
                 final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
                 daily_trade_count: 0,
@@ -2186,6 +2714,7 @@ mod tests {
                 thread_id: Some(thread.id),
                 related_schedule_id: None,
                 market: thread.market.clone(),
+                intent: None,
                 amount_krw: 5_000,
                 final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
                 daily_trade_count: 0,
@@ -2229,6 +2758,7 @@ mod tests {
             notifications_enabled: false,
             notification_permission_requested: false,
             global_live_locked: false,
+            strategy_logic_approved: true,
         }
     }
 
@@ -2236,8 +2766,32 @@ mod tests {
         let mut thread = sample_thread(now);
         thread.status = ThreadStatus::Live;
         thread.validation_status = ValidationStatus::Pass;
-        thread.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
+        apply_live_confirmation(
+            &mut thread,
+            REQUIRED_LIVE_CONFIRMATION_PHRASE.to_string(),
+            now,
+        );
         thread
+    }
+
+    fn sample_live_order_chance(
+        market: &SupportedMarket,
+        bid_balance: f64,
+        ask_balance: f64,
+    ) -> LiveOrderChance {
+        LiveOrderChance {
+            market: market.clone(),
+            bid_currency: "KRW".to_string(),
+            bid_balance,
+            ask_currency: market_base_currency(market).to_string(),
+            ask_balance,
+            order_sides: vec!["bid".to_string(), "ask".to_string()],
+            order_types: Vec::new(),
+            bid_types: vec!["limit".to_string(), "price".to_string()],
+            ask_types: vec!["limit".to_string(), "market".to_string()],
+            bid_min_total_krw: Some(5_000),
+            ask_min_total_krw: Some(5_000),
+        }
     }
 
     fn sample_thread_purchase_log(
