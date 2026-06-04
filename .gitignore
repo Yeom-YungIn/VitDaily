@@ -30,6 +30,9 @@ Thumbs.db
 # pnpm
 .pnpm-store/
 
+# Local debug logs
+tauri-dev.log
+
 #ai
 .agents/
 AGENTS.md

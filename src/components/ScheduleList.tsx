@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { LegacyScheduleLivePolicyStatus, Schedule } from "../types";
 import ScheduleForm from "./ScheduleForm";
+import { logError } from "../utils/logging";
 
 export default function ScheduleList() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -24,6 +25,7 @@ export default function ScheduleList() {
       setSchedules(nextSchedules);
       setPolicyStatuses(nextPolicies);
     } catch (err) {
+      logError("load schedule state failed", err);
       setError(String(err));
     }
   }
@@ -34,6 +36,7 @@ export default function ScheduleList() {
       setSchedules(await invoke<Schedule[]>("toggle_schedule", { id }));
       setPolicyStatuses(await invoke<LegacyScheduleLivePolicyStatus[]>("get_legacy_schedule_live_policy_statuses"));
     } catch (err) {
+      logError("toggle_schedule failed", err);
       setError(String(err));
     }
   }
@@ -44,6 +47,7 @@ export default function ScheduleList() {
       setSchedules(await invoke<Schedule[]>("delete_schedule", { id }));
       setPolicyStatuses(await invoke<LegacyScheduleLivePolicyStatus[]>("get_legacy_schedule_live_policy_statuses"));
     } catch (err) {
+      logError("delete_schedule failed", err);
       setError(String(err));
     }
   }
@@ -56,6 +60,7 @@ export default function ScheduleList() {
       setShowForm(false);
       setEditTarget(null);
     } catch (err) {
+      logError("save_schedule failed", err);
       setError(String(err));
     }
   }

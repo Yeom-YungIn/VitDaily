@@ -15,10 +15,22 @@ use commands::{
     stop_thread, submit_thread_live_market_buy, submit_thread_live_market_sell,
     test_api_connection, toggle_schedule,
 };
+use tauri_plugin_log::{Target, TargetKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("vitdaily".to_string()),
+                    }),
+                    Target::new(TargetKind::Webview),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             tauri::async_runtime::spawn(commands::run_scheduler(app.handle().clone()));

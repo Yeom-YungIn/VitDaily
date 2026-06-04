@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ApiStatus, AppSettings, InvestmentThread, PortfolioAnalytics, PortfolioSnapshot, PortfolioTimePoint, PurchaseLog, ThreadAnalytics } from "../types";
+import { logError } from "../utils/logging";
 
 export default function Dashboard() {
   const [logs, setLogs] = useState<PurchaseLog[]>([]);
@@ -21,13 +22,14 @@ export default function Dashboard() {
   useEffect(() => {
     invoke<ApiStatus>("get_api_status")
       .then(setApiStatus)
-      .catch(() =>
+      .catch((err) => {
+        logError("get_api_status failed", err);
         setApiStatus({
           connected: false,
           hasCredentials: false,
           credentialReadiness: "missing",
-        }),
-      );
+        });
+      });
 
     invoke<PurchaseLog[]>("get_purchase_logs")
       .then((result) => {
@@ -35,6 +37,7 @@ export default function Dashboard() {
         setLogsError("");
       })
       .catch((err) => {
+        logError("get_purchase_logs failed", err);
         setLogs([]);
         setLogsError(String(err));
       });
@@ -45,13 +48,17 @@ export default function Dashboard() {
         setThreadsError("");
       })
       .catch((err) => {
+        logError("get_investment_threads failed", err);
         setThreads([]);
         setThreadsError(String(err));
       });
 
     invoke<AppSettings>("get_app_settings")
       .then((settings) => setGlobalLiveLocked(settings.globalLiveLocked))
-      .catch(() => setGlobalLiveLocked(true));
+      .catch((err) => {
+        logError("get_app_settings failed", err);
+        setGlobalLiveLocked(true);
+      });
 
     invoke<PortfolioAnalytics>("get_portfolio_analytics")
       .then((result) => {
@@ -59,6 +66,7 @@ export default function Dashboard() {
         setAnalyticsError("");
       })
       .catch((err) => {
+        logError("get_portfolio_analytics failed", err);
         setAnalytics(null);
         setAnalyticsError(String(err));
       });
@@ -69,6 +77,7 @@ export default function Dashboard() {
         setPortfolioError("");
       })
       .catch((err) => {
+        logError("get_portfolio_snapshot failed", err);
         setPortfolio(null);
         setPortfolioError(String(err));
       });

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import type { ApiStatus, AppSettings, CredentialReadinessStatus, LiveOrderChanceStatus, LiveOrderGateBlockReason } from "../types";
+import { logError } from "../utils/logging";
 
 type ConnectionStatus = "idle" | "testing" | "ok" | "error";
 
@@ -26,7 +27,10 @@ export default function Settings() {
         setCredentialReadiness(apiStatus.credentialReadiness);
         setStatus(apiStatus.connected ? "ok" : "idle");
       })
-      .catch(() => setStatus("error"));
+      .catch((error) => {
+        logError("get_api_status failed", error);
+        setStatus("error");
+      });
 
     loadAppSettings();
 
@@ -39,7 +43,8 @@ export default function Settings() {
       setNotificationsEnabled(settings.notificationsEnabled);
       setGlobalLiveLocked(settings.globalLiveLocked);
       setStrategyLogicApproved(settings.strategyLogicApproved);
-    } catch {
+    } catch (error) {
+      logError("get_app_settings failed", error);
       setNotificationsEnabled(false);
       setGlobalLiveLocked(true);
       setStrategyLogicApproved(false);
@@ -53,6 +58,7 @@ export default function Settings() {
       setChanceStatus(status);
       setCredentialReadiness(status.credentialReadiness);
     } catch (error) {
+      logError("get_live_order_chance_status failed", error);
       setChanceStatus(null);
       setMessage(String(error));
     } finally {
@@ -75,6 +81,7 @@ export default function Settings() {
       await loadAppSettings();
       await loadLiveOrderChanceStatus();
     } catch (error) {
+      logError("test_api_connection failed", error);
       setStatus("error");
       setMessage(String(error));
     }
@@ -93,6 +100,7 @@ export default function Settings() {
       await loadAppSettings();
       await loadLiveOrderChanceStatus();
     } catch (error) {
+      logError("save_api_credentials failed", error);
       setStatus("error");
       setMessage(String(error));
     }
@@ -110,6 +118,7 @@ export default function Settings() {
       setMessage("저장된 API 키를 삭제했고 Live readiness와 최종 확인을 해제했습니다");
       await loadAppSettings();
     } catch (error) {
+      logError("delete_api_credentials failed", error);
       setStatus("error");
       setMessage(String(error));
     }
@@ -147,6 +156,7 @@ export default function Settings() {
       });
       setNotificationsEnabled(settings.notificationsEnabled);
     } catch (error) {
+      logError("set_notifications_enabled failed", error);
       setMessage(String(error));
     }
   }
@@ -161,6 +171,7 @@ export default function Settings() {
       setGlobalLiveLocked(settings.globalLiveLocked);
       setStrategyLogicApproved(settings.strategyLogicApproved);
     } catch (error) {
+      logError("set_live_trading_settings failed", error);
       setMessage(String(error));
     }
   }

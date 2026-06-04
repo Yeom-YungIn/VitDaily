@@ -7,6 +7,7 @@ import Settings from "./components/Settings";
 import Strategies from "./components/Strategies";
 import Threads from "./components/Threads";
 import type { AppSettings } from "./types";
+import { logError } from "./utils/logging";
 
 type Tab = "overview" | "threads" | "strategies" | "schedules" | "logs" | "settings";
 
@@ -26,7 +27,10 @@ export default function App() {
   useEffect(() => {
     invoke<AppSettings>("get_app_settings")
       .then((settings) => setGlobalLiveLocked(settings.globalLiveLocked))
-      .catch(() => setGlobalLiveLocked(true));
+      .catch((err) => {
+        logError("get_app_settings failed", err);
+        setGlobalLiveLocked(true);
+      });
   }, []);
 
   return (

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { StrategyProfileInfo, ThreadValidationResult } from "../types";
+import { logError } from "../utils/logging";
 
 export default function Strategies() {
   const [profiles, setProfiles] = useState<StrategyProfileInfo[]>([]);
@@ -14,12 +15,16 @@ export default function Strategies() {
         setError("");
       })
       .catch((err) => {
+        logError("get_strategy_profiles failed", err);
         setProfiles([]);
         setError(String(err));
       });
     invoke<ThreadValidationResult[]>("get_thread_validation_results")
       .then(setResults)
-      .catch(() => setResults([]));
+      .catch((err) => {
+        logError("get_thread_validation_results failed", err);
+        setResults([]);
+      });
   }, []);
 
   return (

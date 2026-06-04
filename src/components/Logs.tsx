@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AuditCategory, PurchaseLog, SafetyEvent, SafetyEventType } from "../types";
 import PurchaseLogs from "./PurchaseLogs";
+import { logError } from "../utils/logging";
 
 type EventFilter = "all" | SafetyEventType;
 type LogStatusFilter = "all" | PurchaseLog["status"];
@@ -23,6 +24,7 @@ export default function Logs() {
         setLogsError("");
       })
       .catch((err) => {
+        logError("get_purchase_logs failed", err);
         setLogs([]);
         setLogsError(String(err));
       });
@@ -32,6 +34,7 @@ export default function Logs() {
         setEventsError("");
       })
       .catch((err) => {
+        logError("get_safety_events failed", err);
         setEvents([]);
         setEventsError(String(err));
       });

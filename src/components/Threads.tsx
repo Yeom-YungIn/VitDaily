@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { InvestmentThread, LiveMarketSellRequest, PaperExecutionResult, StrategyProfile, SupportedMarket, ThreadAutoLoopResult, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
+import { logError } from "../utils/logging";
 
 const markets: SupportedMarket[] = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
 const fallbackLiveConfirmationPhrase = "실거래 위험을 이해하고 Live 주문을 활성화합니다";
@@ -31,7 +32,10 @@ export default function Threads() {
     loadThreads();
     invoke<string>("get_live_activation_confirmation_phrase")
       .then(setLiveConfirmationPhrase)
-      .catch(() => setLiveConfirmationPhrase(fallbackLiveConfirmationPhrase));
+      .catch((err) => {
+        logError("get_live_activation_confirmation_phrase failed", err);
+        setLiveConfirmationPhrase(fallbackLiveConfirmationPhrase);
+      });
   }, []);
 
   async function loadThreads() {
@@ -42,6 +46,7 @@ export default function Threads() {
       setSelectedId((current) => current ?? result[0]?.id ?? null);
       setValidationResults(await invoke<ThreadValidationResult[]>("get_thread_validation_results"));
     } catch (err) {
+      logError("load investment threads failed", err);
       setError(String(err));
     }
   }
@@ -54,6 +59,7 @@ export default function Threads() {
       setSelectedId(thread.id);
       setShowForm(false);
     } catch (err) {
+      logError("save_investment_thread failed", err);
       setError(String(err));
     }
   }
@@ -65,6 +71,7 @@ export default function Threads() {
       setThreads(result);
       setSelectedId(result[0]?.id ?? null);
     } catch (err) {
+      logError("delete_investment_thread failed", err);
       setError(String(err));
     }
   }
@@ -79,6 +86,7 @@ export default function Threads() {
         current.map((item) => item.id === thread.id ? { ...item, validationStatus: result.status, updatedAt: new Date().toISOString() } : item),
       );
     } catch (err) {
+      logError("run_thread_backtest failed", err);
       setError(String(err));
     } finally {
       setRunningThreadId(null);
@@ -95,6 +103,7 @@ export default function Threads() {
         current.map((item) => item.id === thread.id ? { ...item, status: item.status === "draft" ? "paper" : item.status, updatedAt: new Date().toISOString() } : item),
       );
     } catch (err) {
+      logError("run_thread_paper_execution failed", err);
       setError(String(err));
     } finally {
       setPaperRunningThreadId(null);
@@ -112,6 +121,7 @@ export default function Threads() {
       }
       await loadThreads();
     } catch (err) {
+      logError("run_thread_auto_loop_tick failed", err);
       setError(String(err));
     } finally {
       setAutoLoopRunningThreadId(null);
@@ -130,6 +140,7 @@ export default function Threads() {
       }
       await loadThreads();
     } catch (err) {
+      logError("run_all_thread_auto_loop_ticks failed", err);
       setError(String(err));
     } finally {
       setAllAutoLoopRunning(false);
@@ -145,6 +156,7 @@ export default function Threads() {
       setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
       setSelectedId(updated.id);
     } catch (err) {
+      logError("activate_thread_live failed", err);
       setError(String(err));
     }
   }
@@ -156,6 +168,7 @@ export default function Threads() {
       setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
       setSelectedId(updated.id);
     } catch (err) {
+      logError("start_thread_live failed", err);
       setError(String(err));
     }
   }
@@ -166,6 +179,7 @@ export default function Threads() {
     try {
       await invoke("submit_thread_live_market_buy", { threadId: thread.id, amountKrw: null });
     } catch (err) {
+      logError("submit_thread_live_market_buy failed", err);
       setError(String(err));
     } finally {
       setLiveBuyRunningThreadId(null);
@@ -184,6 +198,7 @@ export default function Threads() {
       };
       await invoke("submit_thread_live_market_sell", { request });
     } catch (err) {
+      logError("submit_thread_live_market_sell failed", err);
       setError(String(err));
     } finally {
       setLiveSellRunningThreadId(null);
@@ -196,6 +211,7 @@ export default function Threads() {
       const updated = await invoke<InvestmentThread>("pause_thread", { threadId: thread.id });
       setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (err) {
+      logError("pause_thread failed", err);
       setError(String(err));
     }
   }
@@ -206,6 +222,7 @@ export default function Threads() {
       const updated = await invoke<InvestmentThread>("stop_thread", { threadId: thread.id });
       setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (err) {
+      logError("stop_thread failed", err);
       setError(String(err));
     }
   }
@@ -216,6 +233,7 @@ export default function Threads() {
       const updated = await invoke<InvestmentThread>("complete_thread", { threadId: thread.id });
       setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (err) {
+      logError("complete_thread failed", err);
       setError(String(err));
     }
   }

@@ -878,12 +878,12 @@ pub async fn run_scheduler<R: Runtime>(app: AppHandle<R>) {
     loop {
         ticker.tick().await;
         if let Err(error) = execute_due_schedules(&app).await {
-            eprintln!("scheduler error: {error}");
+            log::error!("scheduler error: {error}");
         }
         if let Err(error) =
             run_all_thread_auto_loop_ticks_with_executor(&UpbitLiveOrderExecutor).await
         {
-            eprintln!("thread auto loop error: {error}");
+            log::error!("thread auto loop error: {error}");
         }
     }
 }
