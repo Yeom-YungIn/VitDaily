@@ -39,11 +39,11 @@
 - Personality:
   - Calm, technical, trustworthy, portfolio-grade.
   - More like a careful investment operations dashboard than a flashy trading app.
-  - Korean-first language with concise English labels only where standard in trading/product UI: Paper, Live, Armed, Backtest, P/L.
+  - Korean-first language; keep English trading terms only as secondary details when there is no clearer Korean label.
 - Trust signals:
-  - Always-visible Paper/Live state.
+  - Always-visible simulated/live trading state.
   - Clear disabled states for unsafe actions.
-  - Explicit safety gates and blocked-order reasons.
+  - Explicit protection checks and blocked-order reasons.
   - API key storage explanation: OS keyring, never displayed after saving.
   - Audit trail for live, paper, blocked, failed, and safety events.
 - Avoid:
@@ -59,8 +59,8 @@
   - Present VitDaily as a portfolio-quality desktop product.
   - Support personal local-first crypto auto-investing through Upbit.
   - Make investment threads understandable as independent budget/time/strategy units.
-  - Make live trading deliberately hard to enable accidentally.
-  - Make paper/backtest/demo states visually distinct from live trading.
+  - Make live trading deliberately hard to enable accidentally while still showing the next required step.
+  - Make historical test, simulated execution, and live trading states visually distinct.
 - Non-goals:
   - Paid service / monetization.
   - Non-Upbit exchange support.
@@ -77,6 +77,25 @@
   - No screen implies live trading is active unless it truly is.
   - The design can be shown in a portfolio README/screenshots as a coherent product.
 
+## 1.5 UX improvement direction
+
+- Problem:
+  - The previous thread screen exposed internal terms such as DCA, Paper, Live Lock, Gate, loop, and tick too directly.
+  - Users could not easily tell whether they should register a strategy, run a backtest, run a simulated order, or enable live trading.
+  - Safety controls were technically correct but felt like unrelated blocks instead of a step-by-step flow.
+- Product flow:
+  1. Strategy registration: choose coin, budget, duration, investment style, stop-loss threshold, and daily trade limit.
+  2. Historical test: run the existing backtest before any real order can be considered.
+  3. Simulated execution: evaluate today’s signal and write simulated logs without moving money.
+  4. Live preparation: require API readiness, global trading unlock, strategy approval, final phrase confirmation, and per-order protection checks.
+- UX language:
+  - Prefer “과거 테스트” over “백테스트” when used as a primary button.
+  - Prefer “모의 실행” over “Paper”.
+  - Prefer “전체 실거래 잠금” over “Global Live Lock”.
+  - Prefer “보호장치” over “Gate”.
+  - Prefer “나눠 사기 기준” over “DCA baseline”.
+  - Keep technical terms only when they are secondary implementation details or API-specific labels.
+
 ## Personas and jobs
 
 - Primary personas:
@@ -85,9 +104,9 @@
   - Reviewer/recruiter evaluating product thinking, UX, architecture, and safety.
 - User jobs:
   - Store and test Upbit API credentials securely.
-  - Create recurring DCA schedules.
+  - Create recurring buy schedules.
   - Create investment threads with market, budget, duration, strategy, and safety limits.
-  - Run or review backtest/paper validation before live activation.
+  - Run or review historical test and simulated execution before live activation.
   - Confirm live trading only after seeing clear risk and safety summary.
   - Monitor asset growth, thread performance, trade logs, and safety events.
 - Key contexts of use:
@@ -102,37 +121,37 @@
   - Confirmed: top-tab style navigation.
   - Rationale: user selected top tabs over sidebar/compact sidebar.
   - Proposed items:
-    1. Overview
-    2. Threads
-    3. Strategies
-    4. Schedules
-    5. Logs
-    6. Settings
+    1. 홈
+    2. 투자 만들기
+    3. 전략
+    4. 정기 매수
+    5. 기록
+    6. 설정
 - Core routes/screens:
-  - Overview: asset growth, active threads, safety alerts, recent activity.
-  - Threads: list, create, detail.
+  - Home: asset growth, active threads, safety alerts, recent activity.
+  - Investment builder: list, create, detail, next-action flow.
   - Strategies: stable/conservative/aggressive profile shells and validation summaries.
-  - Schedules: existing recurring DCA schedules, with policy confirmation.
-  - Logs: unified trade, paper, blocked, API, and safety events.
-  - Settings: API credentials, notifications, global live lock, readiness checklist, app info.
+  - Schedules: existing recurring buy schedules, with policy confirmation.
+  - Logs: unified live, simulated, blocked, API, and safety events.
+  - Settings: API credentials, notifications, global trading lock, readiness checklist, app info.
 - Content hierarchy:
-  1. Safety/live status.
+  1. Safety/live-trading status.
   2. Portfolio and thread performance.
   3. Next action or blocked reason.
   4. Detailed logs and configuration.
 - Required global indicators:
-  - Global Live Lock: Locked / Ready / Live-enabled.
-  - Credential readiness: Missing / Saved / Balance OK / Order readiness OK.
-  - Confirmation readiness: Markets, strategy logic, risk defaults, live copy.
+  - 전체 실거래 잠금: 켜짐 / 꺼짐.
+  - API 키 상태: 없음 / 저장됨 / 계정 조회 가능 / 주문 권한 확인됨.
+  - 실거래 준비 상태: 시장, 전략 검증, 위험 기준, 최종 확인.
 
 ## Design principles
 
 - Principle 1: Safety is primary UI, not secondary copy.
   - Live trading controls must be disabled until all gates pass.
   - Disabled controls must explain why they are disabled.
-- Principle 2: Paper and Live are separate product modes.
-  - Paper/Backtest is never styled like Live.
-  - Live requires stronger visual framing and final confirmation.
+- Principle 2: Simulated execution and live trading are separate product modes.
+  - Historical test and simulated execution are never styled like live trading.
+  - Live trading requires stronger visual framing and final confirmation.
 - Principle 3: The app should tell a portfolio story.
   - Prefer a coherent Overview, thread lifecycle, and audit trail over adding many indicators.
 - Principle 4: Local-first trust must be visible.
@@ -154,8 +173,8 @@
   - Success: green for confirmed/safe/pass.
   - Warning: yellow/amber for pending confirmation, armed state, or needs attention.
   - Danger: red for live risk, failure, stop, max-loss, credential/security errors.
-  - Live state: use red or red+orange emphasis sparingly and consistently.
-  - Paper state: use blue/cyan or neutral badge to avoid confusion with live/profit colors.
+  - Live trading state: use red or red+orange emphasis sparingly and consistently.
+  - Simulated state: use blue/cyan or neutral badge to avoid confusion with live/profit colors.
 - Typography:
   - System UI stack from `src/index.css` remains acceptable.
   - Use tabular/monospace numbers for KRW, BTC, P/L, and timestamps where readability matters.
@@ -189,8 +208,8 @@
   - `ThreadCreateForm`.
   - `ThreadDetail`.
   - `ThreadStatusBadge`.
-  - `LiveModeBadge` / `PaperModeBadge`.
-  - `SafetyGateSummary`.
+  - Live-mode badge / simulated-mode badge.
+  - Protection summary.
   - `ValidationPanel`.
   - `PerformanceChart`.
   - `DrawdownMiniChart`.
@@ -199,9 +218,9 @@
   - `GlobalLiveLockPanel`.
   - `CredentialReadinessPanel`.
 - Variants and states:
-  - Thread status: Draft, Paper, Armed, Live, Paused, Stopped, Completed.
+  - Thread status: registered, simulated execution, live-ready, live trading, paused, stopped, completed.
   - Validation: Missing, Running, Pass, Fail, Stale.
-  - Safety gate: Pass, Missing, Blocked, Warning.
+  - Protection check: Pass, Missing, Blocked, Warning.
   - Order/log: Planned, Submitted, Filled, Failed, Blocked, Simulated.
   - Credential: Missing, Saved, Balance OK, Order readiness OK, Invalid/Revoked.
 - Token/component ownership:

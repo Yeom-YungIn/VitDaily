@@ -2299,7 +2299,7 @@ struct LiveOrderGateApproval {
 #[derive(Debug, Clone)]
 struct UpbitOrderRequest {
     preview: UpbitOrderPayloadPreview,
-    json_body: serde_json::Value,
+    json_body: String,
 }
 
 #[derive(Debug, Clone)]
@@ -3161,10 +3161,15 @@ fn build_upbit_order_request_with_identifier(
             let price = amount_krw.to_string();
             let side = "bid".to_string();
             let ord_type = "price".to_string();
-            let query_string = format!(
-                "market={}&side=bid&ord_type=price&price={price}&identifier={identifier}",
-                market.as_upbit_market()
-            );
+            let params = vec![
+                ("market", market.as_upbit_market().to_string()),
+                ("side", side.clone()),
+                ("ord_type", ord_type.clone()),
+                ("price", price.clone()),
+                ("identifier", identifier.clone()),
+            ];
+            let query_string = upbit_order_query_string(&params);
+            let json_body = upbit_order_json_body(&params)?;
             let preview = UpbitOrderPayloadPreview {
                 market: market.clone(),
                 side: side.clone(),
@@ -3174,16 +3179,7 @@ fn build_upbit_order_request_with_identifier(
                 identifier: identifier.clone(),
                 query_string,
             };
-            Ok(UpbitOrderRequest {
-                json_body: serde_json::json!({
-                    "market": market.as_upbit_market(),
-                    "side": side,
-                    "ord_type": ord_type,
-                    "price": amount_krw.to_string(),
-                    "identifier": identifier,
-                }),
-                preview,
-            })
+            Ok(UpbitOrderRequest { json_body, preview })
         }
         LiveOrderIntent::MarketSell => {
             let volume = volume
@@ -3198,10 +3194,15 @@ fn build_upbit_order_request_with_identifier(
             let volume = parsed_volume.to_string();
             let side = "ask".to_string();
             let ord_type = "market".to_string();
-            let query_string = format!(
-                "market={}&side=ask&ord_type=market&volume={volume}&identifier={identifier}",
-                market.as_upbit_market()
-            );
+            let params = vec![
+                ("market", market.as_upbit_market().to_string()),
+                ("side", side.clone()),
+                ("ord_type", ord_type.clone()),
+                ("volume", volume.clone()),
+                ("identifier", identifier.clone()),
+            ];
+            let query_string = upbit_order_query_string(&params);
+            let json_body = upbit_order_json_body(&params)?;
             let preview = UpbitOrderPayloadPreview {
                 market: market.clone(),
                 side: side.clone(),
@@ -3211,18 +3212,30 @@ fn build_upbit_order_request_with_identifier(
                 identifier: identifier.clone(),
                 query_string,
             };
-            Ok(UpbitOrderRequest {
-                json_body: serde_json::json!({
-                    "market": market.as_upbit_market(),
-                    "side": side,
-                    "ord_type": ord_type,
-                    "volume": volume,
-                    "identifier": identifier,
-                }),
-                preview,
-            })
+            Ok(UpbitOrderRequest { json_body, preview })
         }
     }
+}
+
+fn upbit_order_query_string(params: &[(&str, String)]) -> String {
+    params
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn upbit_order_json_body(params: &[(&str, String)]) -> Result<String, String> {
+    let fields = params
+        .iter()
+        .map(|(key, value)| {
+            let key = serde_json::to_string(key).map_err(|error| error.to_string())?;
+            let value = serde_json::to_string(value).map_err(|error| error.to_string())?;
+            Ok(format!("{key}:{value}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(format!("{{{}}}", fields.join(",")))
 }
 
 fn build_upbit_order_payload_preview(
@@ -4000,7 +4013,8 @@ async fn execute_upbit_order_request(
     let resp = client
         .post("https://api.upbit.com/v1/orders")
         .header("Authorization", format!("Bearer {token}"))
-        .json(&request.json_body)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .body(request.json_body.clone())
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -4907,11 +4921,34 @@ mod tests {
                 request.preview.identifier
             )
         );
-        assert_eq!(request.json_body["market"], "KRW-BTC");
-        assert_eq!(request.json_body["side"], request.preview.side);
-        assert_eq!(request.json_body["ord_type"], request.preview.ord_type);
-        assert_eq!(request.json_body["price"], "20000");
-        assert_eq!(request.json_body["identifier"], request.preview.identifier);
+        assert_eq!(
+            request.json_body,
+            format!(
+                r#"{{"market":"KRW-BTC","side":"bid","ord_type":"price","price":"20000","identifier":"{}"}}"#,
+                request.preview.identifier
+            )
+        );
+    }
+
+    #[test]
+    fn upbit_market_sell_request_preview_and_json_body_share_serialization_contract() {
+        let request = build_upbit_order_request_with_identifier(
+            &SupportedMarket::KrwBtc,
+            LiveOrderIntent::MarketSell,
+            20_000,
+            Some("0.005".to_string()),
+            Some("selltest".to_string()),
+        )
+        .expect("sell request");
+
+        assert_eq!(
+            request.preview.query_string,
+            "market=KRW-BTC&side=ask&ord_type=market&volume=0.005&identifier=selltest"
+        );
+        assert_eq!(
+            request.json_body,
+            r#"{"market":"KRW-BTC","side":"ask","ord_type":"market","volume":"0.005","identifier":"selltest"}"#
+        );
     }
 
     #[test]

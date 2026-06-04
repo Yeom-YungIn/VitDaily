@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { LegacyScheduleLivePolicyStatus, Schedule } from "../types";
 import ScheduleForm from "./ScheduleForm";
+import { friendlySystemText } from "../utils/copy";
 import { logError } from "../utils/logging";
 
 export default function ScheduleList() {
@@ -78,7 +79,7 @@ export default function ScheduleList() {
       </div>
 
       <div className="mb-3 rounded-lg border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-100">
-        레거시 DCA 스케줄은 제품 정책상 실거래 주문을 직접 제출하지 않습니다. 실행 시 shared Live Order Gate에서 차단 감사 로그만 남기며, 실거래는 투자 스레드 Live 경로를 사용합니다.
+        기존 정기 매수 스케줄은 지금 실제 주문을 직접 제출하지 않습니다. 실거래는 투자 만들기 화면에서 전략을 등록하고 테스트한 뒤 진행합니다.
       </div>
 
       {schedules.length === 0 ? (
@@ -144,7 +145,7 @@ function ScheduleRow({
         </span>
         {policyStatus && (
           <span className="max-w-xs text-xs text-slate-500">
-            {policyStatus.liveOrderGate.reason}
+            {friendlySystemText(policyStatus.liveOrderGate.reason)}
           </span>
         )}
         {schedule.pendingChange && (

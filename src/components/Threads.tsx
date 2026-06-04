@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { InvestmentThread, LiveMarketSellRequest, PaperExecutionResult, StrategyProfile, SupportedMarket, ThreadAutoLoopResult, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
+import { friendlySystemText } from "../utils/copy";
 import { logError } from "../utils/logging";
 
 const markets: SupportedMarket[] = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
-const fallbackLiveConfirmationPhrase = "실거래 위험을 이해하고 Live 주문을 활성화합니다";
+const fallbackLiveConfirmationPhrase = "실거래 위험을 이해하고 실제 주문을 활성화합니다";
 const strategies: Array<{ value: StrategyProfile; label: string; description: string }> = [
-  { value: "stable", label: "안정적", description: "저빈도 · 손실 제한 우선" },
-  { value: "conservative", label: "보수적", description: "추세 + 평균회귀 균형" },
-  { value: "aggressive", label: "공격적", description: "모멘텀/돌파 · 고위험" },
+  { value: "stable", label: "안정형", description: "천천히 사고 손실 방어를 우선합니다" },
+  { value: "conservative", label: "균형형", description: "추세와 되돌림을 함께 봅니다" },
+  { value: "aggressive", label: "공격형", description: "기회가 보이면 더 자주 움직입니다" },
 ];
 
 export default function Threads() {
@@ -248,30 +249,40 @@ export default function Threads() {
       <section className="rounded-xl border border-slate-700 bg-slate-800/80 p-4">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-white">투자 스레드</h2>
-            <p className="mt-1 text-xs text-slate-400">스레드는 예산, 기간, 전략을 가진 독립 투자 단위입니다.</p>
+            <h2 className="text-base font-semibold text-white">투자 만들기</h2>
+            <p className="mt-1 text-xs text-slate-400">원하는 전략을 등록하고 테스트한 뒤 실행합니다.</p>
           </div>
           <button
             onClick={() => { setEditTarget(null); setShowForm(true); }}
             className="rounded bg-orange-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-orange-400"
           >
-            + 생성
+            + 새 전략
           </button>
           <button
             onClick={handleRunAllAutoLoopTicks}
             disabled={allAutoLoopRunning}
             className="rounded bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
-            {allAutoLoopRunning ? "Loop..." : "전체 tick"}
+            {allAutoLoopRunning ? "점검 중..." : "전체 점검"}
           </button>
         </div>
 
         {error && <p className="mb-3 rounded bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</p>}
 
+        <div className="mb-4 rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+          <p className="text-xs font-semibold text-slate-200">사용 순서</p>
+          <div className="mt-3 grid gap-2 text-[11px] text-slate-400 sm:grid-cols-2">
+            <FlowStep number="1" title="전략 등록" detail="코인, 금액, 기간, 투자 성향을 정합니다." />
+            <FlowStep number="2" title="과거 테스트" detail="최근 데이터로 이 전략이 견딜 만한지 확인합니다." />
+            <FlowStep number="3" title="모의 실행" detail="실제 주문 없이 오늘 신호와 기록 방식을 봅니다." />
+            <FlowStep number="4" title="실거래 준비" detail="API, 잠금 해제, 최종 문구 확인 뒤에만 주문합니다." />
+          </div>
+        </div>
+
         {threads.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-600 p-6 text-center">
-            <p className="text-sm text-slate-300">아직 생성된 스레드가 없습니다.</p>
-            <p className="mt-1 text-xs text-slate-500">첫 버전에서는 Paper/Draft 상태만 생성됩니다.</p>
+            <p className="text-sm text-slate-300">아직 등록한 전략이 없습니다.</p>
+            <p className="mt-1 text-xs text-slate-500">새 전략을 누르면 테스트부터 시작할 수 있습니다.</p>
           </div>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -291,13 +302,14 @@ export default function Threads() {
                       <p className="mt-1 text-xs text-slate-400">
                         {thread.market} · {strategyLabel(thread.strategyProfile)} · {thread.initialBudgetKrw.toLocaleString()}원
                       </p>
+                      <p className="mt-1 text-[11px] text-slate-500">{nextStepText(thread)}</p>
                     </div>
                     <StatusBadge status={thread.status} />
                   </div>
                   <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-400">
                     <span>{thread.durationDays}일</span>
-                    <span>손실 {thread.maxLossPercent}%</span>
-                    <span>{thread.dailyTradeCap}회/일</span>
+                    <span>멈춤 {thread.maxLossPercent}%</span>
+                    <span>하루 {thread.dailyTradeCap}회</span>
                   </div>
                 </button>
               </li>
@@ -338,7 +350,7 @@ export default function Threads() {
 
 function ThreadForm({ initial, onSave, onCancel }: { initial: InvestmentThread | null; onSave: (thread: InvestmentThread) => void; onCancel: () => void }) {
   const now = new Date().toISOString();
-  const [name, setName] = useState(initial?.name ?? "새 투자 스레드");
+  const [name, setName] = useState(initial?.name ?? "비트코인 균형 투자");
   const [market, setMarket] = useState<SupportedMarket>(initial?.market ?? "KRW-BTC");
   const [budget, setBudget] = useState((initial?.initialBudgetKrw ?? 100000).toString());
   const [durationDays, setDurationDays] = useState((initial?.durationDays ?? 30).toString());
@@ -380,32 +392,32 @@ function ThreadForm({ initial, onSave, onCancel }: { initial: InvestmentThread |
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
       <div className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-xl bg-slate-800 p-6 shadow-xl">
         <div className="mb-5">
-          <h3 className="text-lg font-semibold text-white">{initial ? "스레드 편집" : "스레드 생성"}</h3>
-          <p className="mt-1 text-xs text-slate-400">현재 단계에서는 실거래가 아닌 Draft/Paper 준비 상태로만 생성됩니다.</p>
+          <h3 className="text-lg font-semibold text-white">{initial ? "전략 편집" : "새 전략 등록"}</h3>
+          <p className="mt-1 text-xs text-slate-400">처음 저장하면 실제 주문은 하지 않고 과거 테스트부터 진행합니다.</p>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="스레드 이름" className="sm:col-span-2">
+          <Field label="이 전략의 이름" className="sm:col-span-2">
             <input value={name} onChange={(e) => setName(e.target.value)} className="input" />
           </Field>
-          <Field label="마켓">
+          <Field label="투자할 코인">
             <select value={market} onChange={(e) => setMarket(e.target.value as SupportedMarket)} className="input">
               {markets.map((value) => <option key={value}>{value}</option>)}
             </select>
           </Field>
-          <Field label="투자금액 (KRW)">
+          <Field label="처음 배정할 금액">
             <input type="number" min={5000} step={1000} value={budget} onChange={(e) => setBudget(e.target.value)} className="input" />
           </Field>
-          <Field label="투자기간 (일)">
+          <Field label="운영 기간">
             <input type="number" min={1} value={durationDays} onChange={(e) => setDurationDays(e.target.value)} className="input" />
           </Field>
-          <Field label="최대 손실률 (%)">
+          <Field label="자동으로 멈출 손실 기준">
             <input type="number" min={1} max={100} value={maxLossPercent} onChange={(e) => setMaxLossPercent(e.target.value)} className="input" />
           </Field>
-          <Field label="일일 거래 횟수 제한">
+          <Field label="하루 최대 매매 횟수">
             <input type="number" min={1} max={10} value={dailyTradeCap} onChange={(e) => setDailyTradeCap(e.target.value)} className="input" />
           </Field>
-          <Field label="전략" className="sm:col-span-2">
+          <Field label="투자 성향" className="sm:col-span-2">
             <div className="grid gap-2 sm:grid-cols-3">
               {strategies.map((strategy) => (
                 <button
@@ -427,7 +439,7 @@ function ThreadForm({ initial, onSave, onCancel }: { initial: InvestmentThread |
         </div>
 
         <div className="mt-5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-100">
-          실거래 준비 전환은 백테스트 통과, 글로벌 Live Lock 해제, API 키, 전략 승인, 최종 확인을 모두 요구합니다.
+          저장 직후에는 실제 주문이 나가지 않습니다. 과거 테스트와 모의 실행을 거친 뒤, 설정에서 실거래 잠금을 해제하고 이 전략에서 최종 확인을 해야 주문할 수 있습니다.
         </div>
         {error && <p className="mt-3 text-xs text-red-300">{error}</p>}
 
@@ -498,7 +510,7 @@ function ThreadDetail({
     return (
       <section className="rounded-xl border border-slate-700 bg-slate-800/80 p-6">
         <p className="text-sm text-slate-300">스레드를 선택하거나 새로 생성하세요.</p>
-        <p className="mt-2 text-xs text-slate-500">Live readiness 단계에서는 기본 차단 상태에서 검증과 확인을 통과한 스레드만 준비 상태로 전환합니다.</p>
+        <p className="mt-2 text-xs text-slate-500">전략을 만들면 과거 테스트, 모의 실행, 실거래 준비 순서로 진행됩니다.</p>
       </section>
     );
   }
@@ -517,6 +529,7 @@ function ThreadDetail({
   const canRunPaper = thread.status === "draft" || thread.status === "paper";
   const canRunAutoLoop = thread.status === "paper" || thread.status === "live";
   const readinessBlockers = liveReadinessBlockers(thread, validationResult, finalConfirmationSaved);
+  const guide = nextActionGuide(thread, validationResult, finalConfirmationSaved);
 
   return (
     <section className="rounded-xl border border-slate-700 bg-slate-800/80 p-5">
@@ -527,6 +540,7 @@ function ThreadDetail({
             <StatusBadge status={thread.status} />
           </div>
           <p className="mt-1 text-sm text-slate-400">{thread.market} · {strategyLabel(thread.strategyProfile)}</p>
+          <p className="mt-1 text-xs text-slate-500">{guide.description}</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => onEdit(thread)} className="rounded px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700">편집</button>
@@ -537,56 +551,73 @@ function ThreadDetail({
       <div className="mt-5 grid gap-3 md:grid-cols-4">
         <Metric label="초기 자금" value={`${thread.initialBudgetKrw.toLocaleString()}원`} />
         <Metric label="기간" value={`${thread.durationDays}일`} />
-        <Metric label="최대 손실률" value={`${thread.maxLossPercent}%`} tone="danger" />
-        <Metric label="일일 거래 제한" value={`${thread.dailyTradeCap}회`} />
+        <Metric label="멈출 손실 기준" value={`${thread.maxLossPercent}%`} tone="danger" />
+        <Metric label="하루 매매 제한" value={`${thread.dailyTradeCap}회`} />
+      </div>
+
+      <div className="mt-5 rounded-lg border border-slate-700 bg-slate-900/60 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold text-orange-200">다음에 할 일</p>
+            <h3 className="mt-1 text-base font-semibold text-white">{guide.title}</h3>
+            <p className="mt-1 text-sm text-slate-400">{guide.help}</p>
+          </div>
+          <span className="rounded bg-slate-800 px-2 py-1 text-[11px] text-slate-300">{guide.stepLabel}</span>
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-4">
+          <ProgressPill active={guide.step === 1} done={thread.validationStatus !== "missing"} label="1 전략 등록" />
+          <ProgressPill active={guide.step === 2} done={thread.validationStatus === "pass"} label="2 과거 테스트" />
+          <ProgressPill active={guide.step === 3} done={thread.status !== "draft"} label="3 모의 실행" />
+          <ProgressPill active={guide.step === 4} done={["armed", "live"].includes(thread.status)} label="4 실거래 준비" />
+        </div>
       </div>
 
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
         <div className="rounded-lg bg-slate-900/60 p-4">
-          <h3 className="text-sm font-semibold text-slate-200">검증 상태</h3>
+          <h3 className="text-sm font-semibold text-slate-200">2단계 · 과거 테스트</h3>
           <ValidationBadge status={thread.validationStatus} />
           <button
             onClick={() => onRunBacktest(thread)}
             disabled={isRunningBacktest}
             className="mt-4 w-full rounded bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
-            {isRunningBacktest ? "백테스트 실행 중..." : "최근 1년 백테스트 실행"}
+            {isRunningBacktest ? "테스트 실행 중..." : "최근 1년으로 테스트"}
           </button>
-          <p className="mt-2 text-xs text-slate-500">Upbit 공개 60분 캔들로 검증하며 실주문은 전송하지 않습니다.</p>
+          <p className="mt-2 text-xs text-slate-500">업비트 공개 가격 데이터로 계산하며 실제 주문은 보내지 않습니다.</p>
         </div>
         <div className="rounded-lg bg-slate-900/60 p-4">
-          <h3 className="text-sm font-semibold text-slate-200">Paper 실행</h3>
+          <h3 className="text-sm font-semibold text-slate-200">3단계 · 모의 실행</h3>
           <button
             onClick={() => onRunPaper(thread)}
             disabled={isRunningPaper || !canRunPaper}
             className="mt-3 w-full rounded bg-cyan-500 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
-            {isRunningPaper ? "Paper 실행 중..." : "전략 신호 Paper 실행"}
+            {isRunningPaper ? "모의 실행 중..." : "오늘 신호를 모의 실행"}
           </button>
-          <p className="mt-2 text-xs text-slate-500">API 키 없이 공개 캔들을 평가하고 모의 주문 로그만 남깁니다.</p>
+          <p className="mt-2 text-xs text-slate-500">API 키 없이 오늘 신호를 평가하고 가짜 주문 기록만 남깁니다.</p>
         </div>
         <div className="rounded-lg bg-slate-900/60 p-4 lg:col-span-2">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-slate-200">자동 실행 loop</h3>
-              <p className="mt-1 text-xs text-slate-500">Paper 상태는 credential 없이 모의 tick만 실행하고, Live 상태는 모든 Gate 통과 후에만 주문을 제출합니다.</p>
+              <h3 className="text-sm font-semibold text-slate-200">자동 점검</h3>
+              <p className="mt-1 text-xs text-slate-500">모의 실행 상태에서는 가짜 주문만 기록하고, 실거래 상태에서는 모든 보호 조건을 통과해야 주문합니다.</p>
             </div>
             <button
               onClick={() => onRunAutoLoopTick(thread)}
               disabled={!canRunAutoLoop || isRunningAutoLoop}
               className="rounded bg-cyan-600 px-4 py-2 text-xs font-semibold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
             >
-              {isRunningAutoLoop ? "Tick 실행 중..." : "선택 tick 실행"}
+              {isRunningAutoLoop ? "점검 중..." : "지금 한 번 점검"}
             </button>
           </div>
           {autoLoopResult && (
             <div className="mt-3 rounded border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs">
               <p className="text-slate-300">{autoLoopActionLabel(autoLoopResult.action)} · {autoLoopResult.message}</p>
               <p className="mt-1 break-all text-[11px] text-slate-500">
-                mode={autoLoopResult.mode} · retry={autoLoopResult.retryCount} · key={autoLoopResult.idempotencyKey ?? "none"}
+                방식={autoLoopResult.mode === "paper" ? "모의 실행" : "실거래"} · 재시도={autoLoopResult.retryCount} · 기록키={autoLoopResult.idempotencyKey ?? "없음"}
               </p>
               {autoLoopResult.liveOrderGate && (
-                <p className="mt-1 text-[11px] text-yellow-200">{autoLoopResult.liveOrderGate.reason}</p>
+                <p className="mt-1 text-[11px] text-yellow-200">{friendlySystemText(autoLoopResult.liveOrderGate.reason)}</p>
               )}
             </div>
           )}
@@ -594,10 +625,10 @@ function ThreadDetail({
       </div>
 
       <div className="mt-5 rounded-lg bg-slate-900/60 p-4">
-        <h3 className="text-sm font-semibold text-slate-200">Live 활성화</h3>
+        <h3 className="text-sm font-semibold text-slate-200">4단계 · 실거래 준비</h3>
         <div className="mt-3 rounded border border-red-500/20 bg-red-500/5 px-3 py-3 text-xs text-red-100">
-          <p>{thread.market} · {thread.initialBudgetKrw.toLocaleString()}원 · {strategyLabel(thread.strategyProfile)} · 최대 손실 {thread.maxLossPercent}% · 일일 {thread.dailyTradeCap}회</p>
-          <p className="mt-3 text-slate-300">아래 문구를 정확히 입력하면 이 스레드에 최종 확인 증거가 저장되고 Armed 상태로 전환됩니다.</p>
+          <p>{thread.market} · {thread.initialBudgetKrw.toLocaleString()}원 · {strategyLabel(thread.strategyProfile)} · 손실 {thread.maxLossPercent}%부터 멈춤 · 하루 {thread.dailyTradeCap}회까지</p>
+          <p className="mt-3 text-slate-300">아래 문구를 정확히 입력하면 이 전략만 실거래 준비 상태로 전환됩니다.</p>
           <code className="mt-2 block select-all rounded bg-slate-950/70 px-3 py-2 text-[11px] text-red-100">{liveConfirmationPhrase}</code>
           <input
             value={confirmationText}
@@ -622,34 +653,34 @@ function ThreadDetail({
               ))}
             </div>
           )}
-          <p className="mt-3 text-[11px] text-slate-400">Global Lock, API 권한, /orders/chance 잔고와 주문 가능성은 제출 시 Gate에서 다시 확인합니다.</p>
+          <p className="mt-3 text-[11px] text-slate-400">설정의 실거래 잠금, API 권한, 잔고, 최소 주문금액은 주문 직전에 다시 확인합니다.</p>
         </div>
         <button
           onClick={() => onActivate(thread, confirmationText)}
           disabled={!canRequestActivation || !confirmationMatches}
           className="mt-3 w-full rounded bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
         >
-          Armed 준비
+          이 전략 실거래 준비
         </button>
         <button
           onClick={() => onStartLive(thread)}
           disabled={!canStartLive}
           className="mt-2 w-full rounded bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
         >
-          Live 시작
+          실거래 시작
         </button>
         <button
           onClick={() => onSubmitLiveMarketBuy(thread)}
           disabled={!canSubmitLiveBuy || isRunningLiveBuy}
           className="mt-2 w-full rounded bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
         >
-          {isRunningLiveBuy ? "Live 시장가 매수 제출 중..." : "Live 시장가 매수 제출"}
+          {isRunningLiveBuy ? "실제 매수 주문 제출 중..." : "실제 매수 주문 제출"}
         </button>
         <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
           <input
             value={sellVolume}
             onChange={(event) => setSellVolume(event.target.value)}
-            placeholder="매도 BTC volume"
+            placeholder="팔 BTC 수량"
             className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 outline-none focus:border-red-400"
           />
           <button
@@ -657,7 +688,7 @@ function ThreadDetail({
             disabled={!canSubmitLiveSell || isRunningLiveSell}
             className="rounded bg-red-800 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
-            {isRunningLiveSell ? "매도 제출 중..." : "Live 시장가 매도"}
+            {isRunningLiveSell ? "매도 제출 중..." : "실제 매도 주문"}
           </button>
         </div>
         <div className="mt-2 flex gap-2">
@@ -683,29 +714,29 @@ function ThreadDetail({
             완료
           </button>
         </div>
-        <p className="mt-2 text-xs text-slate-500">최종 주문 제출은 별도 Live Order Gate와 Upbit payload preview 테스트 뒤에만 가능하며 기본값은 차단입니다.</p>
+        <p className="mt-2 text-xs text-slate-500">실제 주문은 보호장치와 업비트 주문 미리보기 확인을 통과해야 하며 기본값은 차단입니다.</p>
       </div>
 
       {paperResult && (
         <div className="mt-5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-cyan-100">마지막 Paper 실행</h3>
-              <p className="mt-1 text-xs text-cyan-200/80">{paperResult.message}</p>
+              <h3 className="text-sm font-semibold text-cyan-100">마지막 모의 실행</h3>
+              <p className="mt-1 text-xs text-cyan-200/80">{friendlySystemText(paperResult.message)}</p>
             </div>
             <span className={`rounded px-2 py-1 text-xs ${paperResult.duplicate ? "bg-yellow-500/10 text-yellow-200" : "bg-blue-500/10 text-blue-200"}`}>
-              {paperResult.duplicate ? "idempotent" : "new tick"}
+              {paperResult.duplicate ? "이미 기록됨" : "새 기록"}
             </span>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-4">
             <Metric label="신호" value={paperActionLabel(paperResult.signal.action)} />
             <Metric label="평가 가격" value={`${Math.round(paperResult.signal.priceKrw).toLocaleString()}원`} />
             <Metric label="모의 로그" value={paperResult.log ? "기록됨" : "없음"} />
-            <Metric label="Live Gate" value={paperResult.liveOrderGate.allowed ? "통과" : "차단 확인"} tone={paperResult.liveOrderGate.allowed ? "default" : "danger"} />
+            <Metric label="실거래 보호" value={paperResult.liveOrderGate.allowed ? "통과" : "차단 확인"} tone={paperResult.liveOrderGate.allowed ? "default" : "danger"} />
           </div>
-          <p className="mt-3 text-xs text-cyan-100/80">{paperResult.signal.reason}</p>
-          <p className="mt-1 break-all text-[11px] text-slate-400">key: {paperResult.idempotencyKey}</p>
-          <p className="mt-1 text-[11px] text-yellow-200">{paperResult.liveOrderGate.reason}</p>
+          <p className="mt-3 text-xs text-cyan-100/80">{friendlySystemText(paperResult.signal.reason)}</p>
+          <p className="mt-1 break-all text-[11px] text-slate-400">기록키: {paperResult.idempotencyKey}</p>
+          <p className="mt-1 text-[11px] text-yellow-200">{friendlySystemText(paperResult.liveOrderGate.reason)}</p>
         </div>
       )}
 
@@ -724,11 +755,11 @@ function ThreadDetail({
           <div className="mt-4 grid gap-3 md:grid-cols-4">
             <Metric label="전략 수익률" value={formatPercent(validationResult.returnPercent)} />
             <Metric label="최대 낙폭" value={formatPercent(validationResult.maxDrawdownPercent)} tone="danger" />
-            <Metric label="DCA 기준선" value={formatPercent(validationResult.baselineDcaReturnPercent)} />
-            <Metric label="Buy/Hold" value={formatPercent(validationResult.baselineBuyHoldReturnPercent)} />
+            <Metric label="나눠 사기 기준" value={formatPercent(validationResult.baselineDcaReturnPercent)} />
+            <Metric label="처음에 전부 사기" value={formatPercent(validationResult.baselineBuyHoldReturnPercent)} />
             <Metric label="거래 횟수" value={`${validationResult.simulatedTrades}건`} />
             <Metric label="수수료" value={`${validationResult.feesKrw.toLocaleString()}원`} />
-            <Metric label="슬리피지" value={`${validationResult.slippagePercent}%`} />
+            <Metric label="체결 비용 가정" value={`${validationResult.slippagePercent}%`} />
             <Metric label="최근 90일" value={formatPercent(validationResult.recent90dReturnPercent)} />
           </div>
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
@@ -747,7 +778,7 @@ function liveReadinessBlockers(thread: InvestmentThread, validationResult: Threa
     blockers.push("백테스트 통과 필요");
   }
   if (["stopped", "completed"].includes(thread.status)) {
-    blockers.push("종료된 스레드는 Live 차단");
+    blockers.push("종료된 전략은 실거래 차단");
   }
   if (!["draft", "paper", "paused", "armed", "live"].includes(thread.status)) {
     blockers.push("지원하지 않는 스레드 상태");
@@ -756,9 +787,106 @@ function liveReadinessBlockers(thread: InvestmentThread, validationResult: Threa
     blockers.push("최종 확인 저장 필요");
   }
   if (thread.status !== "armed" && thread.status !== "live") {
-    blockers.push("주문 전 Armed/Live 전환 필요");
+    blockers.push("주문 전 실거래 준비/시작 필요");
   }
   return blockers;
+}
+
+function FlowStep({ number, title, detail }: { number: string; title: string; detail: string }) {
+  return (
+    <div className="flex gap-2 rounded bg-slate-950/40 p-2">
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500/20 text-[10px] font-semibold text-orange-200">{number}</span>
+      <span>
+        <span className="block font-semibold text-slate-200">{title}</span>
+        <span className="mt-0.5 block leading-4">{detail}</span>
+      </span>
+    </div>
+  );
+}
+
+function ProgressPill({ label, active, done }: { label: string; active: boolean; done: boolean }) {
+  const color = done
+    ? "border-green-500/30 bg-green-500/10 text-green-200"
+    : active
+      ? "border-orange-500/40 bg-orange-500/10 text-orange-200"
+      : "border-slate-700 bg-slate-950/40 text-slate-500";
+  return <span className={`rounded border px-3 py-2 text-center text-[11px] ${color}`}>{label}</span>;
+}
+
+function nextStepText(thread: InvestmentThread): string {
+  if (thread.validationStatus === "missing") return "다음: 과거 테스트 실행";
+  if (thread.validationStatus === "fail") return "다음: 조건을 조정하고 다시 테스트";
+  if (thread.status === "draft") return "다음: 모의 실행으로 신호 확인";
+  if (thread.status === "paper") return "다음: 실거래 준비 여부 결정";
+  if (thread.status === "armed") return "다음: 실거래 시작";
+  if (thread.status === "live") return "현재: 실거래 점검 중";
+  if (thread.status === "paused") return "현재: 일시정지";
+  if (thread.status === "stopped") return "현재: 중지됨";
+  return "현재: 완료됨";
+}
+
+function nextActionGuide(thread: InvestmentThread, validationResult: ThreadValidationResult | null, finalConfirmationSaved: boolean) {
+  if (thread.validationStatus === "missing" || !validationResult) {
+    return {
+      step: 2,
+      stepLabel: "과거 테스트 필요",
+      title: "먼저 최근 1년 데이터로 테스트하세요",
+      description: "전략은 등록됐지만 아직 과거 가격으로 검증되지 않았습니다.",
+      help: "테스트는 실제 주문을 보내지 않고 수익률, 손실 폭, 거래 횟수를 계산합니다.",
+    };
+  }
+  if (thread.validationStatus === "fail" || validationResult.status === "fail") {
+    return {
+      step: 2,
+      stepLabel: "조건 조정 필요",
+      title: "전략 조건을 낮추거나 기간을 바꿔 다시 테스트하세요",
+      description: "현재 조건은 앱의 손실/성과 기준을 통과하지 못했습니다.",
+      help: "투자금, 손실 기준, 하루 매매 횟수, 투자 성향을 조정한 뒤 다시 테스트할 수 있습니다.",
+    };
+  }
+  if (thread.status === "draft") {
+    return {
+      step: 3,
+      stepLabel: "모의 실행 가능",
+      title: "오늘 신호를 모의 실행하세요",
+      description: "과거 테스트를 통과했고, 이제 실제 주문 없이 오늘의 신호를 확인할 수 있습니다.",
+      help: "모의 실행은 주문 로그처럼 기록되지만 돈은 움직이지 않습니다.",
+    };
+  }
+  if (thread.status === "paper" && !finalConfirmationSaved) {
+    return {
+      step: 4,
+      stepLabel: "실거래 준비 선택",
+      title: "실제 주문을 원하면 준비 단계를 진행하세요",
+      description: "모의 실행 상태입니다. 실거래는 잠금 해제, API 확인, 최종 문구 입력을 요구합니다.",
+      help: "지금은 모의 점검을 반복하거나, 아래 실거래 준비 문구를 입력할 수 있습니다.",
+    };
+  }
+  if (thread.status === "armed") {
+    return {
+      step: 4,
+      stepLabel: "시작 대기",
+      title: "실거래 시작 버튼을 누르면 이 전략이 실행 상태가 됩니다",
+      description: "최종 확인은 저장됐지만 주문 전 보호장치는 매번 다시 검사됩니다.",
+      help: "설정의 실거래 잠금이 켜져 있거나 API 권한이 부족하면 실제 주문은 차단됩니다.",
+    };
+  }
+  if (thread.status === "live") {
+    return {
+      step: 4,
+      stepLabel: "실거래 중",
+      title: "자동 점검으로 주문 가능 여부를 확인하세요",
+      description: "이 전략은 실거래 상태입니다. 보호 조건을 통과할 때만 주문됩니다.",
+      help: "긴급 중지나 일시정지 버튼으로 언제든 멈출 수 있습니다.",
+    };
+  }
+  return {
+    step: 4,
+    stepLabel: "관리 중",
+    title: "상태를 확인하고 필요한 관리 작업을 선택하세요",
+    description: "이 전략은 일반 진행 흐름을 벗어난 상태입니다.",
+    help: "필요하면 편집, 일시정지, 중지, 완료 처리를 사용할 수 있습니다.",
+  };
 }
 
 function Field({ label, className = "", children }: { label: string; className?: string; children: ReactNode }) {
@@ -776,13 +904,13 @@ function Metric({ label, value, tone = "default" }: { label: string; value: stri
 
 function StatusBadge({ status }: { status: ThreadStatus }) {
   const labels: Record<ThreadStatus, string> = {
-    draft: "Draft",
-    paper: "Paper",
-    armed: "Armed",
-    live: "Live",
-    paused: "Paused",
-    stopped: "Stopped",
-    completed: "Done",
+    draft: "등록됨",
+    paper: "모의 실행",
+    armed: "실거래 준비",
+    live: "실거래 중",
+    paused: "일시정지",
+    stopped: "중지",
+    completed: "완료",
   };
   const color = status === "live" ? "bg-red-500/10 text-red-300" : status === "draft" ? "bg-slate-500/10 text-slate-300" : "bg-blue-500/10 text-blue-300";
   return <span className={`rounded px-2 py-0.5 text-[11px] font-medium ${color}`}>{labels[status]}</span>;
@@ -812,11 +940,11 @@ function paperActionLabel(action: PaperExecutionResult["signal"]["action"]): str
 
 function autoLoopActionLabel(action: ThreadAutoLoopResult["action"]): string {
   const labels: Record<ThreadAutoLoopResult["action"], string> = {
-    paper_tick: "Paper tick",
-    live_market_buy_submitted: "Live 매수 제출",
-    live_gate_blocked: "Gate 차단",
-    duplicate_tick: "중복 tick",
-    retry_limited: "Retry 제한",
+    paper_tick: "모의 점검",
+    live_market_buy_submitted: "실제 매수 제출",
+    live_gate_blocked: "보호장치 차단",
+    duplicate_tick: "중복 점검",
+    retry_limited: "재시도 제한",
     hold: "대기",
     sell_skipped: "자동 매도 차단",
     skipped: "건너뜀",
@@ -838,7 +966,7 @@ function ResultList({ title, items }: { title: string; items: string[] }) {
       <h4 className="text-xs font-semibold text-slate-300">{title}</h4>
       <ul className="mt-2 space-y-1 text-xs text-slate-400">
         {items.map((item) => (
-          <li key={item}>- {item}</li>
+          <li key={item}>- {friendlySystemText(item)}</li>
         ))}
       </ul>
     </div>
@@ -847,10 +975,10 @@ function ResultList({ title, items }: { title: string; items: string[] }) {
 
 function ValidationChart({ result }: { result: ThreadValidationResult }) {
   const rows = [
-    { label: "Strategy", value: result.returnPercent, color: "bg-orange-400" },
-    { label: "DCA", value: result.baselineDcaReturnPercent, color: "bg-blue-400" },
-    { label: "Buy/Hold", value: result.baselineBuyHoldReturnPercent, color: "bg-green-400" },
-    { label: "2x Slippage", value: result.doubledSlippageReturnPercent, color: "bg-yellow-400" },
+    { label: "내 전략", value: result.returnPercent, color: "bg-orange-400" },
+    { label: "나눠 사기", value: result.baselineDcaReturnPercent, color: "bg-blue-400" },
+    { label: "한 번에 사기", value: result.baselineBuyHoldReturnPercent, color: "bg-green-400" },
+    { label: "비용 2배", value: result.doubledSlippageReturnPercent, color: "bg-yellow-400" },
   ];
   const maxAbs = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import type { ApiStatus, AppSettings, CredentialReadinessStatus, LiveOrderChanceStatus, LiveOrderGateBlockReason } from "../types";
+import { friendlySystemText } from "../utils/copy";
 import { logError } from "../utils/logging";
 
 type ConnectionStatus = "idle" | "testing" | "ok" | "error";
@@ -77,7 +78,7 @@ export default function Settings() {
       setHasCredentials(apiStatus.hasCredentials);
       setCredentialReadiness(apiStatus.credentialReadiness);
       setStatus(apiStatus.connected ? "ok" : "error");
-      setMessage(apiStatus.error ?? "업비트 API 연결을 확인했습니다. API 키 변경으로 Live readiness와 최종 확인은 해제되었습니다.");
+      setMessage(apiStatus.error ?? "업비트 API 연결을 확인했습니다. API 키가 바뀌어 실거래 준비와 최종 확인은 초기화되었습니다.");
       await loadAppSettings();
       await loadLiveOrderChanceStatus();
     } catch (error) {
@@ -96,7 +97,7 @@ export default function Settings() {
       setHasCredentials(true);
       setCredentialReadiness("stored_unchecked");
       setStatus("idle");
-      setMessage("API 키를 OS 키체인에 저장했고 Live readiness와 최종 확인을 해제했습니다");
+      setMessage("API 키를 OS 키체인에 저장했고 실거래 준비와 최종 확인을 초기화했습니다");
       await loadAppSettings();
       await loadLiveOrderChanceStatus();
     } catch (error) {
@@ -115,7 +116,7 @@ export default function Settings() {
       setHasCredentials(false);
       setCredentialReadiness("missing");
       setChanceStatus(null);
-      setMessage("저장된 API 키를 삭제했고 Live readiness와 최종 확인을 해제했습니다");
+      setMessage("저장된 API 키를 삭제했고 실거래 준비와 최종 확인을 초기화했습니다");
       await loadAppSettings();
     } catch (error) {
       logError("delete_api_credentials failed", error);
@@ -186,27 +187,27 @@ export default function Settings() {
     missing: { text: "API 키 없음", color: "text-slate-400" },
     stored_unchecked: { text: "저장됨 · 미검증", color: "text-yellow-300" },
     connected: { text: "계정 조회 가능", color: "text-green-300" },
-    invalid_key: { text: "Invalid key", color: "text-red-300" },
-    revoked_key: { text: "Revoked key", color: "text-red-300" },
+    invalid_key: { text: "잘못된 API 키", color: "text-red-300" },
+    revoked_key: { text: "폐기된 API 키", color: "text-red-300" },
     order_permission_missing: { text: "주문 권한 없음", color: "text-red-300" },
     network_error: { text: "확인 실패", color: "text-yellow-300" },
   };
   const chanceReasonLabel: Record<LiveOrderGateBlockReason, string> = {
-    global_live_locked: "Global Live Lock",
+    global_live_locked: "전체 실거래 잠금",
     credentials_missing: "API 키 없음",
     strategy_logic_not_approved: "전략 승인 필요",
     final_confirmation_missing: "최종 확인 필요",
-    live_mode_not_enabled: "Live 상태 아님",
+    live_mode_not_enabled: "실거래 상태 아님",
     daily_trade_cap_exceeded: "일일 한도 초과",
     max_loss_exceeded: "손실 기준 초과",
     supported_market_required: "지원 마켓 필요",
     validation_missing: "검증 없음",
     validation_not_passed: "검증 실패",
-    legacy_schedule_not_migrated: "레거시 스케줄 차단",
+    legacy_schedule_not_migrated: "기존 정기 매수 차단",
     settings_unavailable: "설정 로드 실패",
     audit_data_unavailable: "감사 데이터 실패",
-    invalid_api_key: "Invalid API key",
-    revoked_api_key: "Revoked API key",
+    invalid_api_key: "잘못된 API 키",
+    revoked_api_key: "폐기된 API 키",
     insufficient_balance: "잔고 부족",
     minimum_order_amount_not_met: "최소 주문금액 미달",
     market_order_unavailable: "시장가 주문 불가",
@@ -229,13 +230,13 @@ export default function Settings() {
             </p>
           )}
           <div className="rounded border border-slate-700 bg-slate-900/40 px-3 py-2 text-xs">
-            <p className="text-slate-500">Credential readiness</p>
+            <p className="text-slate-500">API 키 상태</p>
             <p className={`mt-1 ${credentialReadinessLabel[credentialReadiness].color}`}>
               {credentialReadinessLabel[credentialReadiness].text}
             </p>
             {["invalid_key", "revoked_key", "order_permission_missing"].includes(credentialReadiness) && (
               <p className="mt-1 text-red-200/80">
-                이 상태에서는 Live Order Gate가 fail-closed로 차단되며 API 키를 재발급하거나 주문 권한을 추가해야 합니다.
+                이 상태에서는 보호장치가 실제 주문을 차단합니다. API 키를 재발급하거나 주문 권한을 추가해야 합니다.
               </p>
             )}
           </div>
@@ -324,14 +325,14 @@ export default function Settings() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-slate-300 mb-3">Live Trading</h2>
+        <h2 className="text-sm font-semibold text-slate-300 mb-3">실거래 안전 설정</h2>
         <div className="bg-slate-800 rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm text-slate-200">Global Live Lock</p>
+              <p className="text-sm text-slate-200">전체 실거래 잠금</p>
               <p className="mt-0.5 text-xs text-slate-400">
                 {globalLiveLocked
-                  ? "Global Live Lock이 활성화되어 실거래가 잠겨 있습니다."
+                  ? "이 잠금이 켜져 있으면 어떤 전략도 실제 주문을 보낼 수 없습니다."
                   : "잠금이 해제되어도 스레드별 검증, 최종 확인, API 키, 전략 승인이 모두 필요합니다."}
               </p>
             </div>
@@ -341,13 +342,13 @@ export default function Settings() {
                 globalLiveLocked ? "bg-slate-700 text-slate-300" : "bg-red-500/10 text-red-300"
               }`}
             >
-              {globalLiveLocked ? "Locked" : "Unlocked"}
+              {globalLiveLocked ? "잠김" : "해제됨"}
             </button>
           </div>
           <div className="flex items-center justify-between gap-3 border-t border-slate-700 pt-4">
             <div>
-              <p className="text-sm text-slate-200">Strategy Logic Approval</p>
-              <p className="mt-0.5 text-xs text-slate-400">백테스트/Paper 로직을 실거래 후보로 승인해야 Live Order Gate가 통과됩니다.</p>
+              <p className="text-sm text-slate-200">검증된 전략만 실거래 허용</p>
+              <p className="mt-0.5 text-xs text-slate-400">과거 테스트와 모의 실행 흐름을 실거래 후보로 허용해야 보호장치가 통과됩니다.</p>
             </div>
             <button
               onClick={() => updateLiveTradingSettings(globalLiveLocked, !strategyLogicApproved)}
@@ -355,7 +356,7 @@ export default function Settings() {
                 strategyLogicApproved ? "bg-red-500/10 text-red-300" : "bg-slate-700 text-slate-300"
               }`}
             >
-              {strategyLogicApproved ? "Approved" : "Not Approved"}
+              {strategyLogicApproved ? "허용됨" : "허용 안 됨"}
             </button>
           </div>
           <div className="border-t border-slate-700 pt-4">
@@ -363,7 +364,7 @@ export default function Settings() {
               <div>
                 <p className="text-sm text-slate-200">Upbit 주문 가능성</p>
                 <p className="mt-0.5 text-xs text-slate-400">
-                  /orders/chance로 잔고, 최소 주문금액, 시장가 주문 지원, 주문 권한을 확인합니다.
+                  업비트에서 잔고, 최소 주문금액, 시장가 주문 지원, 주문 권한을 확인합니다.
                 </p>
               </div>
               <button
@@ -378,7 +379,7 @@ export default function Settings() {
               <StatusCell label="상태" value={chanceStatus?.allowed ? "통과" : "차단"} danger={!chanceStatus?.allowed} />
               <StatusCell label="마켓" value={chanceStatus?.market ?? "KRW-BTC"} />
               <StatusCell
-                label="Credential"
+                label="API 키"
                 value={credentialReadinessLabel[chanceStatus?.credentialReadiness ?? credentialReadiness].text}
                 danger={["invalid_key", "revoked_key", "order_permission_missing", "missing"].includes(chanceStatus?.credentialReadiness ?? credentialReadiness)}
               />
@@ -404,7 +405,7 @@ export default function Settings() {
                     </span>
                   ))}
                 </div>
-                <p className="mt-2 text-red-100/80">{chanceStatus.reason}</p>
+                <p className="mt-2 text-red-100/80">{friendlySystemText(chanceStatus.reason)}</p>
               </div>
             )}
           </div>

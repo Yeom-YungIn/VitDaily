@@ -3,12 +3,18 @@ use crate::types::{
     SupportedMarket, ThreadValidationResult, ValidationStatus,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use std::collections::HashMap;
+use tokio::time::{sleep, Duration as TokioDuration};
 use uuid::Uuid;
 
 const DEFAULT_FEE_PERCENT: f64 = 0.05;
 const BACKTEST_DAYS: u32 = 365;
+const UPBIT_CANDLE_BACKTEST_REQUEST_INTERVAL_MS: u64 = 250;
+const UPBIT_CANDLE_SIGNAL_REQUEST_INTERVAL_MS: u64 = 120;
+const UPBIT_RATE_LIMIT_RESET_MS: u64 = 1_100;
+const UPBIT_CANDLE_MAX_RETRIES: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct MarketCandle {
@@ -89,13 +95,27 @@ impl SupportedMarket {
 pub async fn fetch_recent_year_hourly_candles(
     market: &SupportedMarket,
 ) -> Result<Vec<MarketCandle>, String> {
-    fetch_hourly_candles(market, BACKTEST_DAYS, 50, 200).await
+    fetch_hourly_candles(
+        market,
+        BACKTEST_DAYS,
+        50,
+        200,
+        TokioDuration::from_millis(UPBIT_CANDLE_BACKTEST_REQUEST_INTERVAL_MS),
+    )
+    .await
 }
 
 pub async fn fetch_recent_signal_hourly_candles(
     market: &SupportedMarket,
 ) -> Result<Vec<MarketCandle>, String> {
-    fetch_hourly_candles(market, 30, 2, 200).await
+    fetch_hourly_candles(
+        market,
+        30,
+        2,
+        200,
+        TokioDuration::from_millis(UPBIT_CANDLE_SIGNAL_REQUEST_INTERVAL_MS),
+    )
+    .await
 }
 
 async fn fetch_hourly_candles(
@@ -103,34 +123,20 @@ async fn fetch_hourly_candles(
     days: u32,
     max_batches: usize,
     count: usize,
+    request_interval: TokioDuration,
 ) -> Result<Vec<MarketCandle>, String> {
     let client = reqwest::Client::new();
     let mut candles = Vec::new();
     let mut to: Option<String> = None;
     let cutoff = Utc::now() - Duration::days(days as i64);
 
-    for _ in 0..max_batches {
-        let mut request = client
-            .get("https://api.upbit.com/v1/candles/minutes/60")
-            .query(&[
-                ("market", market.as_upbit_market().to_string()),
-                ("count", count.to_string()),
-            ]);
-        if let Some(to_value) = to.as_ref() {
-            request = request.query(&[("to", to_value.clone())]);
+    for batch_index in 0..max_batches {
+        if batch_index > 0 {
+            sleep(request_interval).await;
         }
 
-        let response = request.send().await.map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("업비트 캔들 조회 실패: HTTP {status} {body}"));
-        }
-
-        let batch = response
-            .json::<Vec<UpbitMinuteCandle>>()
-            .await
-            .map_err(|e| e.to_string())?;
+        let (batch, remaining_sec) =
+            fetch_upbit_hourly_candle_batch(&client, market, count, to.as_deref()).await?;
         if batch.is_empty() {
             break;
         }
@@ -154,6 +160,10 @@ async fn fetch_hourly_candles(
             break;
         }
         to = Some(earliest.timestamp.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+
+        if remaining_sec == Some(0) {
+            sleep(TokioDuration::from_millis(UPBIT_RATE_LIMIT_RESET_MS)).await;
+        }
     }
 
     candles.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
@@ -164,6 +174,65 @@ async fn fetch_hourly_candles(
         ));
     }
     Ok(candles)
+}
+
+async fn fetch_upbit_hourly_candle_batch(
+    client: &reqwest::Client,
+    market: &SupportedMarket,
+    count: usize,
+    to: Option<&str>,
+) -> Result<(Vec<UpbitMinuteCandle>, Option<u32>), String> {
+    let mut retry_delay = TokioDuration::from_millis(UPBIT_RATE_LIMIT_RESET_MS);
+
+    for attempt in 0..=UPBIT_CANDLE_MAX_RETRIES {
+        let mut request = client
+            .get("https://api.upbit.com/v1/candles/minutes/60")
+            .query(&[
+                ("market", market.as_upbit_market().to_string()),
+                ("count", count.to_string()),
+            ]);
+        if let Some(to_value) = to {
+            request = request.query(&[("to", to_value.to_string())]);
+        }
+
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        let status = response.status();
+        let remaining_sec = upbit_remaining_req_sec(response.headers());
+        if status.is_success() {
+            let batch = response
+                .json::<Vec<UpbitMinuteCandle>>()
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok((batch, remaining_sec));
+        }
+
+        let status_code = status.as_u16();
+        let body = response.text().await.unwrap_or_default();
+        if status_code == 429 && attempt < UPBIT_CANDLE_MAX_RETRIES {
+            sleep(retry_delay).await;
+            retry_delay *= 2;
+            continue;
+        }
+
+        return Err(format!("업비트 캔들 조회 실패: HTTP {status_code} {body}"));
+    }
+
+    Err("업비트 캔들 조회 실패: 요청 제한 재시도를 모두 사용했습니다".to_string())
+}
+
+fn upbit_remaining_req_sec(headers: &HeaderMap) -> Option<u32> {
+    headers
+        .get("Remaining-Req")
+        .and_then(|header| header.to_str().ok())
+        .and_then(parse_upbit_remaining_req_sec)
+}
+
+fn parse_upbit_remaining_req_sec(header: &str) -> Option<u32> {
+    header
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("sec="))
+        .and_then(|value| value.parse::<u32>().ok())
 }
 
 pub fn evaluate_latest_signal_for_thread(
@@ -1135,6 +1204,22 @@ mod tests {
 
         assert_eq!(status, ValidationStatus::Fail);
         assert!(reasons.iter().any(|reason| reason.contains("손실률")));
+    }
+
+    #[test]
+    fn parses_upbit_remaining_req_sec_header() {
+        assert_eq!(
+            parse_upbit_remaining_req_sec("group=candle; min=1800; sec=7"),
+            Some(7)
+        );
+        assert_eq!(
+            parse_upbit_remaining_req_sec("group=candle;sec=0; min=1800"),
+            Some(0)
+        );
+        assert_eq!(
+            parse_upbit_remaining_req_sec("group=candle; min=1800"),
+            None
+        );
     }
 
     fn synthetic_candles(count: usize, close: impl Fn(usize) -> f64) -> Vec<MarketCandle> {

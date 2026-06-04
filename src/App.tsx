@@ -12,12 +12,12 @@ import { logError } from "./utils/logging";
 type Tab = "overview" | "threads" | "strategies" | "schedules" | "logs" | "settings";
 
 const tabs: Array<{ id: Tab; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "threads", label: "Threads" },
-  { id: "strategies", label: "Strategies" },
-  { id: "schedules", label: "Schedules" },
-  { id: "logs", label: "Logs" },
-  { id: "settings", label: "Settings" },
+  { id: "overview", label: "홈" },
+  { id: "threads", label: "투자 만들기" },
+  { id: "strategies", label: "전략" },
+  { id: "schedules", label: "정기 매수" },
+  { id: "logs", label: "기록" },
+  { id: "settings", label: "설정" },
 ];
 
 export default function App() {
@@ -41,14 +41,14 @@ export default function App() {
             <img src="/vitdaily-icon.png" alt="" className="h-7 w-7 rounded-md" />
             <div>
               <span className="block font-semibold tracking-tight text-slate-100">VitDaily</span>
-              <span className="text-[11px] text-slate-500">Local-first Upbit automation dashboard</span>
+              <span className="text-[11px] text-slate-500">전략을 등록하고 검증한 뒤 실행하는 자동 투자 앱</span>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="hidden rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-300 sm:block">
               <span className={`mr-1 inline-block h-2 w-2 rounded-full ${globalLiveLocked ? "bg-slate-500" : "bg-red-400"}`} />
-              Live Lock: {globalLiveLocked ? "Locked" : "Unlocked"}
+              실거래 잠금: {globalLiveLocked ? "켜짐" : "꺼짐"}
             </div>
             <nav className="flex flex-wrap gap-1">
               {tabs.map((tab) => (

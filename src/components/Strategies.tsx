@@ -82,9 +82,9 @@ export default function Strategies() {
                   <th className="py-2 pr-3">전략</th>
                   <th className="py-2 pr-3">상태</th>
                   <th className="py-2 pr-3">수익률</th>
-                  <th className="py-2 pr-3">DCA</th>
-                  <th className="py-2 pr-3">Buy/Hold</th>
-                  <th className="py-2 pr-3">MDD</th>
+                  <th className="py-2 pr-3">나눠 사기</th>
+                  <th className="py-2 pr-3">한 번에 사기</th>
+                  <th className="py-2 pr-3">최대 손실폭</th>
                   <th className="py-2 pr-3">거래</th>
                 </tr>
               </thead>
@@ -108,7 +108,7 @@ export default function Strategies() {
       </section>
 
       <div className="mt-5 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 text-sm text-yellow-100">
-        이 화면은 전략 분류와 검증 기준을 설명합니다. 수익을 보장하거나 매수/매도를 추천하지 않습니다. 실거래는 백테스트/Paper 검증과 최종 확인 전까지 비활성화됩니다.
+        이 화면은 전략 분류와 검증 기준을 설명합니다. 수익을 보장하거나 매수/매도를 추천하지 않습니다. 실거래는 과거 테스트, 모의 실행, 최종 확인 전까지 비활성화됩니다.
       </div>
     </div>
   );

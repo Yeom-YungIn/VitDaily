@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AuditCategory, PurchaseLog, SafetyEvent, SafetyEventType } from "../types";
 import PurchaseLogs from "./PurchaseLogs";
+import { friendlySystemText } from "../utils/copy";
 import { logError } from "../utils/logging";
 
 type EventFilter = "all" | SafetyEventType;
@@ -63,7 +64,7 @@ export default function Logs() {
         <div className="mb-4 grid gap-3 sm:grid-cols-4">
           <LogStat label="차단 주문" value={`${blockedOrders}건`} tone="warning" />
           <LogStat label="실패 주문" value={`${failedOrders}건`} tone="danger" />
-          <LogStat label="안전 게이트 이벤트" value={`${safetyGateEvents}건`} />
+          <LogStat label="보호장치 이벤트" value={`${safetyGateEvents}건`} />
           <LogStat label="검증/정보 이벤트" value={`${validationEvents}건`} />
         </div>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -80,13 +81,13 @@ export default function Logs() {
             </select>
             <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as CategoryFilter)} className="input py-1 text-xs">
               <option value="all">전체 분류</option>
-              <option value="trade">Trade</option>
-              <option value="paper_trade">Paper Trade</option>
-              <option value="blocked_order">Blocked Order</option>
-              <option value="api_failure">API Failure</option>
-              <option value="safety_gate">Safety Gate</option>
-              <option value="validation">Validation</option>
-              <option value="schedule">Schedule</option>
+              <option value="trade">실제 주문</option>
+              <option value="paper_trade">모의 주문</option>
+              <option value="blocked_order">막은 주문</option>
+              <option value="api_failure">API 실패</option>
+              <option value="safety_gate">보호장치</option>
+              <option value="validation">검증</option>
+              <option value="schedule">정기 매수</option>
             </select>
           </div>
         </div>
@@ -124,8 +125,8 @@ export default function Logs() {
                   </div>
                   <span className="text-[11px] text-slate-500">{new Date(event.createdAt).toLocaleString("ko-KR")}</span>
                 </div>
-                <p className="mt-2 text-sm text-slate-300">{event.message}</p>
-                {event.reason && <p className="mt-1 text-xs text-yellow-200">{event.reason}</p>}
+                <p className="mt-2 text-sm text-slate-300">{friendlySystemText(event.message)}</p>
+                {event.reason && <p className="mt-1 text-xs text-yellow-200">{friendlySystemText(event.reason)}</p>}
               </li>
             ))}
           </ul>

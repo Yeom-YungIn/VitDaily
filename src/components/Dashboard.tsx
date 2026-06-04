@@ -107,8 +107,8 @@ export default function Dashboard() {
     <div className="w-full max-w-6xl">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-white">Overview</h1>
-          <p className="mt-1 text-sm text-slate-400">포트폴리오, 스레드, 안전 상태를 한 화면에서 확인합니다.</p>
+          <h1 className="text-xl font-semibold text-white">홈</h1>
+          <p className="mt-1 text-sm text-slate-400">전략 등록, 테스트, 모의 실행, 실거래 준비 상태를 한눈에 확인합니다.</p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm">
           <span className={`h-2 w-2 rounded-full ${apiStatus.connected ? "bg-green-400" : "bg-slate-500"}`} />
@@ -130,9 +130,9 @@ export default function Dashboard() {
           detail={`투입 ${((summary?.investedKrw || summary?.totalBudgetKrw) ?? 0).toLocaleString()}원`}
         />
         <SummaryCard
-          label="Live Lock"
-          value={globalLiveLocked ? "Locked" : "Unlocked"}
-          detail={globalLiveLocked ? "실거래 잠금" : "잠금 해제됨 · v1 실거래는 별도 안전 게이트로 차단"}
+          label="실거래 잠금"
+          value={globalLiveLocked ? "켜짐" : "꺼짐"}
+          detail={globalLiveLocked ? "실제 주문은 막혀 있습니다" : "잠금 해제됨 · 주문 전 보호장치가 다시 확인합니다"}
           tone={globalLiveLocked ? "danger" : "orange"}
         />
       </div>
@@ -145,14 +145,14 @@ export default function Dashboard() {
               <p className="mt-1 text-xs text-slate-400">로컬 체결 로그가 있으면 실제 로그 기준, 없으면 백테스트 결과 기준으로 표시합니다.</p>
             </div>
             <span className="rounded bg-blue-500/10 px-2 py-1 text-[11px] text-blue-300">
-              {summary?.latestPointSource === "local" ? "Local" : summary?.latestPointSource === "simulated" ? "Paper" : "Empty"}
+              {summary?.latestPointSource === "local" ? "실제 기록" : summary?.latestPointSource === "simulated" ? "테스트 결과" : "대기"}
             </span>
           </div>
           {analyticsError && <p className="mb-3 rounded bg-red-500/10 px-3 py-2 text-xs text-red-300">{analyticsError}</p>}
           <PerformanceChart points={analytics?.timeSeries ?? []} />
           <div className="mt-4 grid gap-3 sm:grid-cols-3">
             <SummaryCard label="활성 스레드" value={`${activeThreads.length}개`} detail={`전체 ${threads.length}개`} />
-            <SummaryCard label="차단 주문" value={`${summary?.blockedOrders ?? 0}건`} detail="실거래 보호 로그" tone="danger" />
+            <SummaryCard label="막은 주문" value={`${summary?.blockedOrders ?? 0}건`} detail="보호장치 기록" tone="danger" />
             <SummaryCard label="BTC 보유량" value={`${formatBtc(portfolio?.btcTotal ?? 0)} BTC`} detail={portfolio ? `약 ${Math.round(portfolio.btcValueKrw).toLocaleString()}원` : portfolioError || "API 조회 없음"} />
           </div>
           <AllocationList allocations={analytics?.allocations ?? []} />
@@ -297,7 +297,7 @@ function ThreadAnalyticsRow({ thread }: { thread: ThreadAnalytics }) {
       </div>
       <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-500">
         <span>낙폭 {typeof thread.maxDrawdownPercent === "number" ? formatPercent(thread.maxDrawdownPercent) : "-"}</span>
-        <span>DCA {typeof thread.baselineDcaReturnPercent === "number" ? formatPercent(thread.baselineDcaReturnPercent) : "-"}</span>
+        <span>나눠 사기 {typeof thread.baselineDcaReturnPercent === "number" ? formatPercent(thread.baselineDcaReturnPercent) : "-"}</span>
         <span>거래 {thread.simulatedTrades ?? 0}건</span>
       </div>
     </li>

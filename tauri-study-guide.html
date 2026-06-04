@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tauri 완전 정복 — 초급 · 중급 · 고급</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3350;
+      --accent: #7c5cfc;
+      --accent2: #24c8db;
+      --accent3: #ffa94d;
+      --text: #e2e8f0;
+      --text-muted: #8892a4;
+      --green: #4ade80;
+      --red: #f87171;
+      --yellow: #fbbf24;
+      --code-bg: #0d1117;
+      --beginner: #4ade80;
+      --intermediate: #fbbf24;
+      --advanced: #f87171;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', 'Apple SD Gothic Neo', sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ── 헤더 ── */
+    header {
+      background: linear-gradient(135deg, #1a0533 0%, #0a1628 50%, #001a1f 100%);
+      padding: 60px 40px 50px;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      overflow: hidden;
+    }
+    header::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 50% 0%, rgba(124,92,252,.25) 0%, transparent 70%);
+    }
+    header h1 {
+      font-size: 2.8rem;
+      font-weight: 800;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      position: relative;
+    }
+    header p {
+      margin-top: 12px;
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      position: relative;
+    }
+    .badge-row {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 20px;
+      position: relative;
+      flex-wrap: wrap;
+    }
+    .badge {
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: .8rem;
+      font-weight: 600;
+    }
+    .badge-beginner   { background: rgba(74,222,128,.15); color: var(--beginner); border: 1px solid rgba(74,222,128,.3); }
+    .badge-inter      { background: rgba(251,191,36,.15);  color: var(--yellow);   border: 1px solid rgba(251,191,36,.3); }
+    .badge-advanced   { background: rgba(248,113,113,.15); color: var(--red);      border: 1px solid rgba(248,113,113,.3); }
+
+    /* ── 네비 ── */
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 40px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      gap: 0;
+      overflow-x: auto;
+    }
+    nav a {
+      display: block;
+      padding: 14px 18px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: .88rem;
+      font-weight: 500;
+      white-space: nowrap;
+      border-bottom: 2px solid transparent;
+      transition: all .2s;
+    }
+    nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
+
+    /* ── 레이아웃 ── */
+    .container { max-width: 1100px; margin: 0 auto; padding: 50px 30px; }
+
+    /* ── 섹션 헤더 ── */
+    .level-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin: 60px 0 30px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid var(--border);
+    }
+    .level-badge {
+      padding: 6px 18px;
+      border-radius: 6px;
+      font-size: .95rem;
+      font-weight: 700;
+      letter-spacing: .5px;
+    }
+    .lv-beginner  { background: rgba(74,222,128,.15); color: var(--beginner); }
+    .lv-inter     { background: rgba(251,191,36,.15);  color: var(--yellow); }
+    .lv-advanced  { background: rgba(248,113,113,.15); color: var(--red); }
+    .level-header h2 { font-size: 1.9rem; font-weight: 700; }
+
+    /* ── 카드 ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px 30px;
+      margin-bottom: 24px;
+    }
+    .card-title {
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-title .icon { font-size: 1.3rem; }
+
+    /* ── 이론 vs 실무 탭 ── */
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .tab-label {
+      padding: 5px 14px;
+      border-radius: 6px;
+      font-size: .82rem;
+      font-weight: 600;
+    }
+    .tab-theory   { background: rgba(124,92,252,.15); color: var(--accent); border: 1px solid rgba(124,92,252,.3); }
+    .tab-practice { background: rgba(36,200,219,.15);  color: var(--accent2); border: 1px solid rgba(36,200,219,.3); }
+    .tab-interview{ background: rgba(255,169,77,.15);  color: var(--accent3); border: 1px solid rgba(255,169,77,.3); }
+
+    /* ── 코드 블록 ── */
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+      overflow-x: auto;
+      margin: 12px 0;
+      font-size: .85rem;
+      line-height: 1.6;
+    }
+    code {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+      color: #a8d8ff;
+    }
+    pre code { color: inherit; }
+    .kw   { color: #ff79c6; }
+    .str  { color: #f1fa8c; }
+    .cmt  { color: #6272a4; font-style: italic; }
+    .fn   { color: #50fa7b; }
+    .num  { color: #bd93f9; }
+    .type { color: #8be9fd; }
+    .attr { color: #ffb86c; }
+
+    /* ── 리스트 ── */
+    ul, ol { padding-left: 22px; }
+    li { margin-bottom: 6px; }
+
+    /* ── 비교 표 ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      font-size: .88rem;
+    }
+    th {
+      background: var(--surface2);
+      padding: 10px 14px;
+      text-align: left;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      color: var(--accent2);
+    }
+    td {
+      padding: 9px 14px;
+      border: 1px solid var(--border);
+      vertical-align: top;
+    }
+    tr:nth-child(even) td { background: rgba(255,255,255,.03); }
+
+    /* ── 인터뷰 Q&A ── */
+    .qa-block {
+      background: var(--surface2);
+      border-left: 3px solid var(--accent3);
+      border-radius: 0 8px 8px 0;
+      padding: 14px 18px;
+      margin: 10px 0;
+    }
+    .qa-q { font-weight: 700; color: var(--accent3); margin-bottom: 6px; }
+    .qa-a { color: var(--text-muted); }
+
+    /* ── 다이어그램 ── */
+    .diagram {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      font-family: monospace;
+      font-size: .85rem;
+      color: var(--accent2);
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+
+    /* ── 팁 박스 ── */
+    .tip {
+      background: rgba(124,92,252,.08);
+      border: 1px solid rgba(124,92,252,.3);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin: 10px 0;
+      font-size: .9rem;
+    }
+    .tip strong { color: var(--accent); }
+    .warn {
+      background: rgba(251,191,36,.08);
+      border: 1px solid rgba(251,191,36,.3);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin: 10px 0;
+      font-size: .9rem;
+    }
+    .warn strong { color: var(--yellow); }
+
+    /* ── 섹션 구분자 ── */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 40px 0;
+    }
+
+    h3 { font-size: 1.05rem; font-weight: 700; margin: 18px 0 8px; color: var(--accent2); }
+    h4 { font-size: .95rem; font-weight: 600; margin: 14px 0 6px; color: var(--text); }
+    p  { margin-bottom: 10px; }
+    a  { color: var(--accent); }
+
+    /* ── TOC ── */
+    .toc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px 28px;
+      margin-bottom: 40px;
+    }
+    .toc-title { font-size: 1rem; font-weight: 700; margin-bottom: 14px; color: var(--accent2); }
+    .toc-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; }
+    .toc-list li a { color: var(--text-muted); text-decoration: none; font-size: .88rem; }
+    .toc-list li a:hover { color: var(--text); }
+
+    @media (max-width: 700px) {
+      header h1 { font-size: 1.8rem; }
+      .container { padding: 30px 16px; }
+      nav { padding: 0 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════ HEADER ════════════════ -->
+<header>
+  <h1>Tauri 완전 정복</h1>
+  <p>5년차 백엔드 개발자를 위한 — 이론 · 실무 · 면접 질문 올인원 가이드</p>
+  <div class="badge-row">
+    <span class="badge badge-beginner">초급 (Beginner)</span>
+    <span class="badge badge-inter">중급 (Intermediate)</span>
+    <span class="badge badge-advanced">고급 (Advanced)</span>
+  </div>
+</header>
+
+<!-- ════════════════ NAV ════════════════ -->
+<nav>
+  <a href="#overview">개요</a>
+  <a href="#beginner">초급</a>
+  <a href="#intermediate">중급</a>
+  <a href="#advanced">고급</a>
+  <a href="#interview-all">면접 총정리</a>
+</nav>
+
+<!-- ════════════════ MAIN ════════════════ -->
+<div class="container">
+
+  <!-- TOC -->
+  <div class="toc">
+    <div class="toc-title">목차</div>
+    <ul class="toc-list">
+      <li><a href="#overview">1. Tauri란 무엇인가?</a></li>
+      <li><a href="#b1">2. Tauri vs Electron 비교</a></li>
+      <li><a href="#b2">3. 아키텍처 구조</a></li>
+      <li><a href="#b3">4. 설치 및 프로젝트 생성</a></li>
+      <li><a href="#b4">5. Commands (IPC 핵심)</a></li>
+      <li><a href="#b5">6. Events 시스템</a></li>
+      <li><a href="#b6">7. 설정 파일 (tauri.conf.json)</a></li>
+      <li><a href="#i1">8. 상태 관리 (State)</a></li>
+      <li><a href="#i2">9. 파일시스템 & 다이얼로그</a></li>
+      <li><a href="#i3">10. HTTP 클라이언트</a></li>
+      <li><a href="#i4">11. 플러그인 시스템</a></li>
+      <li><a href="#i5">12. 보안 모델 & CSP</a></li>
+      <li><a href="#i6">13. 빌드 & 배포</a></li>
+      <li><a href="#a1">14. 커스텀 Rust 플러그인</a></li>
+      <li><a href="#a2">15. 멀티 윈도우 & 시스템 트레이</a></li>
+      <li><a href="#a3">16. 자동 업데이트 (Updater)</a></li>
+      <li><a href="#a4">17. Tauri 2.0 & 모바일 지원</a></li>
+      <li><a href="#a5">18. 성능 최적화 & 보안 강화</a></li>
+      <li><a href="#interview-all">19. 면접 질문 총정리</a></li>
+    </ul>
+  </div>
+
+  <!-- ══════════════ OVERVIEW ══════════════ -->
+  <section id="overview">
+    <div class="card">
+      <div class="card-title"><span class="icon">🦀</span> Tauri란 무엇인가?</div>
+      <p>
+        <strong>Tauri</strong>는 Rust로 작성된 크로스플랫폼 <strong>데스크탑 앱 프레임워크</strong>입니다.
+        프론트엔드는 웹 기술(HTML/CSS/JS + 모든 프레임워크)로 구성하고,
+        백엔드(네이티브 기능)는 <strong>Rust</strong>로 처리합니다.
+        Electron과 동일한 목표를 가지지만, 번들 크기는 <strong>10배 이상 작고</strong>, 메모리 사용량도 현저히 낮습니다.
+      </p>
+      <div class="diagram">
+┌─────────────────────────────────────────────────────────┐
+│                    Tauri Application                    │
+│                                                         │
+│   ┌─────────────────────┐   ┌─────────────────────────┐│
+│   │   Frontend (UI)     │   │   Backend (Rust)        ││
+│   │                     │   │                         ││
+│   │  React / Vue /      │◄──►  Commands (함수 노출)  ││
+│   │  Svelte / Vanilla   │   │  State 관리             ││
+│   │                     │   │  OS API 접근            ││
+│   │  (WebView 렌더링)   │   │  파일시스템, 네트워크   ││
+│   └─────────────────────┘   └─────────────────────────┘│
+│               │                          │              │
+│         IPC Bridge (invoke / emit)       │              │
+│                                          ▼              │
+│                              ┌───────────────────────┐  │
+│                              │  OS Native APIs       │  │
+│                              │  (Windows/macOS/Linux)│  │
+│                              └───────────────────────┘  │
+└─────────────────────────────────────────────────────────┘</div>
+      <div class="tip"><strong>백엔드 개발자 관점:</strong> Tauri의 Rust 백엔드는 REST API 서버와 유사합니다. 프론트엔드에서 <code>invoke('command_name', args)</code>를 호출하면 Rust 함수가 실행되는 구조 — HTTP 요청 대신 IPC를 사용하는 것이라고 이해하면 됩니다.</div>
+    </div>
+  </section>
+
+  <!-- ══════════════ BEGINNER ══════════════ -->
+  <div class="level-header" id="beginner">
+    <span class="level-badge lv-beginner">BEGINNER</span>
+    <h2>초급</h2>
+  </div>
+
+  <!-- B1: Tauri vs Electron -->
+  <div class="card" id="b1">
+    <div class="card-title"><span class="icon">⚖️</span> Tauri vs Electron 비교</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>항목</th>
+          <th>Tauri</th>
+          <th>Electron</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>백엔드 언어</td><td>Rust</td><td>Node.js</td></tr>
+        <tr><td>WebView 엔진</td><td>OS 기본 (WKWebView / WebView2 / WebKitGTK)</td><td>Chromium 번들</td></tr>
+        <tr><td>번들 크기</td><td>~5–15 MB</td><td>~100–200 MB</td></tr>
+        <tr><td>메모리 사용량</td><td>낮음 (~30–60 MB)</td><td>높음 (~100–300 MB)</td></tr>
+        <tr><td>성능</td><td>네이티브 수준</td><td>JS 런타임 오버헤드</td></tr>
+        <tr><td>보안</td><td>기본 화이트리스트 모델</td><td>Node.js context isolation 필요</td></tr>
+        <tr><td>학습 곡선</td><td>Rust 학습 필요</td><td>JS만 알면 시작 가능</td></tr>
+        <tr><td>모바일 지원</td><td>Tauri 2.0에서 지원</td><td>미지원</td></tr>
+        <tr><td>사용 사례</td><td>성능 중시 앱, 보안 민감 앱</td><td>빠른 프로토타이핑, VS Code 등</td></tr>
+      </tbody>
+    </table>
+
+    <div class="warn"><strong>주의:</strong> OS 기본 WebView를 사용하므로 브라우저별 렌더링 차이가 발생할 수 있습니다. Windows는 WebView2 (Chromium 기반), macOS는 WKWebView (Safari 기반), Linux는 WebKitGTK 계열.</div>
+  </div>
+
+  <!-- B2: 아키텍처 -->
+  <div class="card" id="b2">
+    <div class="card-title"><span class="icon">🏗️</span> 아키텍처 구조 심층 이해</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+    </div>
+
+    <h3>핵심 구성 요소</h3>
+    <ul>
+      <li><strong>tauri (Rust crate)</strong> — 메인 런타임. 앱 생명주기, 윈도우 관리, IPC 처리</li>
+      <li><strong>tauri-build</strong> — 빌드 시 리소스 번들링, 아이콘 처리</li>
+      <li><strong>@tauri-apps/api (JS)</strong> — 프론트엔드에서 Rust 기능을 호출하는 JS 바인딩</li>
+      <li><strong>Vite / Webpack</strong> — 프론트엔드 번들러 (Tauri는 번들러에 무관)</li>
+    </ul>
+
+    <h3>IPC (Inter-Process Communication) 동작 원리</h3>
+    <div class="diagram">
+Frontend (JS)                Backend (Rust)
+     │                            │
+     │  invoke("get_user", {id})  │
+     │ ─────────────────────────► │
+     │                            │  #[tauri::command]
+     │                            │  fn get_user(id: u32) -> User { ... }
+     │                            │
+     │  Promise<User>  ◄────────  │  return User { ... }
+     │                            │</div>
+
+    <h3>프로세스 모델</h3>
+    <ul>
+      <li><strong>Main Process</strong> (Rust): OS 리소스 접근, 윈도우 생성, 비즈니스 로직</li>
+      <li><strong>Renderer Process</strong> (WebView): UI 렌더링 — JS/HTML/CSS 실행</li>
+      <li>둘 사이의 통신은 IPC Bridge를 통해 직렬화된 메시지로 처리</li>
+    </ul>
+
+    <div class="tip"><strong>백엔드 관점 비유:</strong> Main Process = API 서버, Renderer = 클라이언트 앱, invoke() = HTTP POST 요청, Command = Controller/Handler 함수.</div>
+  </div>
+
+  <!-- B3: 설치 및 프로젝트 -->
+  <div class="card" id="b3">
+    <div class="card-title"><span class="icon">🚀</span> 설치 및 프로젝트 생성</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <h3>사전 요구사항</h3>
+    <pre><code><span class="cmt"># 1. Rust 설치</span>
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustc --version  <span class="cmt"># 1.70+ 필요</span>
+
+<span class="cmt"># 2. Node.js 설치 (18+)</span>
+node --version
+
+<span class="cmt"># 3. macOS: Xcode Command Line Tools</span>
+xcode-select --install
+
+<span class="cmt"># 4. Linux: 의존성 설치</span>
+sudo apt install libwebkit2gtk-4.1-dev libssl-dev \
+  libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev</code></pre>
+
+    <h3>프로젝트 생성</h3>
+    <pre><code><span class="cmt"># create-tauri-app 사용 (권장)</span>
+npm create tauri-app@latest my-app
+<span class="cmt"># 선택: Rust / TypeScript / React 등</span>
+
+<span class="cmt"># 또는 기존 웹 프로젝트에 Tauri 추가</span>
+npm install --save-dev @tauri-apps/cli
+npm run tauri init</code></pre>
+
+    <h3>프로젝트 구조</h3>
+    <pre><code>my-app/
+├── src/                   <span class="cmt"># 프론트엔드 (React/Vue 등)</span>
+│   ├── main.tsx
+│   └── App.tsx
+├── src-tauri/             <span class="cmt"># Rust 백엔드</span>
+│   ├── Cargo.toml         <span class="cmt"># Rust 의존성 (package.json 역할)</span>
+│   ├── tauri.conf.json    <span class="cmt"># Tauri 설정</span>
+│   ├── build.rs           <span class="cmt"># 빌드 스크립트</span>
+│   ├── capabilities/      <span class="cmt"># 권한 설정 (Tauri 2.0)</span>
+│   └── src/
+│       ├── main.rs        <span class="cmt"># 앱 진입점</span>
+│       └── lib.rs         <span class="cmt"># Commands 등록</span>
+├── package.json
+└── vite.config.ts</code></pre>
+
+    <h3>개발 서버 실행</h3>
+    <pre><code>npm run tauri dev    <span class="cmt"># Vite dev server + Rust 컴파일 동시 실행</span>
+npm run tauri build  <span class="cmt"># 프로덕션 빌드 (.exe / .dmg / .AppImage)</span></code></pre>
+  </div>
+
+  <!-- B4: Commands -->
+  <div class="card" id="b4">
+    <div class="card-title"><span class="icon">📡</span> Commands — IPC의 핵심</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p>Commands는 Tauri의 핵심 IPC 메커니즘입니다. Rust 함수에 <code>#[tauri::command]</code> 어노테이션을 붙이면 JS에서 호출 가능한 "엔드포인트"가 됩니다.</p>
+
+    <h3>Rust — Command 정의</h3>
+    <pre><code><span class="cmt">// src-tauri/src/lib.rs</span>
+<span class="kw">use</span> tauri::Manager;
+
+<span class="cmt">// 간단한 동기 Command</span>
+<span class="attr">#[tauri::command]</span>
+<span class="kw">fn</span> <span class="fn">greet</span>(name: &<span class="type">str</span>) -> <span class="type">String</span> {
+    <span class="fn">format!</span>(<span class="str">"Hello, {}! You've been greeted from Rust!"</span>, name)
+}
+
+<span class="cmt">// 비동기 Command (I/O, DB, 외부 API 호출 등)</span>
+<span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">fetch_data</span>(url: <span class="type">String</span>) -> <span class="type">Result</span>&lt;<span class="type">String</span>, <span class="type">String</span>&gt; {
+    reqwest::get(&url)
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+<span class="cmt">// Command 등록</span>
+<span class="attr">#[cfg_attr(mobile, tauri::mobile_entry_point)]</span>
+<span class="kw">pub fn</span> <span class="fn">run</span>() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::<span class="fn">generate_handler!</span>[greet, fetch_data])
+        .<span class="fn">run</span>(tauri::<span class="fn">generate_context!</span>())
+        .<span class="fn">expect</span>(<span class="str">"error while running tauri application"</span>);
+}</code></pre>
+
+    <h3>JavaScript — Command 호출</h3>
+    <pre><code><span class="cmt">// src/App.tsx</span>
+<span class="kw">import</span> { invoke } <span class="kw">from</span> <span class="str">'@tauri-apps/api/core'</span>;
+
+<span class="cmt">// 기본 호출</span>
+<span class="kw">const</span> message = <span class="kw">await</span> <span class="fn">invoke</span>&lt;<span class="type">string</span>&gt;(<span class="str">'greet'</span>, { name: <span class="str">'World'</span> });
+
+<span class="cmt">// 에러 처리</span>
+<span class="kw">try</span> {
+  <span class="kw">const</span> data = <span class="kw">await</span> <span class="fn">invoke</span>&lt;<span class="type">string</span>&gt;(<span class="str">'fetch_data'</span>, { url: <span class="str">'https://api.example.com'</span> });
+  <span class="fn">console</span>.<span class="fn">log</span>(data);
+} <span class="kw">catch</span> (err) {
+  <span class="fn">console</span>.<span class="fn">error</span>(<span class="str">'Rust error:'</span>, err);  <span class="cmt">// Rust의 Err(String) 값</span>
+}</code></pre>
+
+    <h3>복잡한 타입 전달 (Serde)</h3>
+    <pre><code><span class="cmt">// Rust — 구조체 직렬화</span>
+<span class="kw">use</span> serde::{Deserialize, Serialize};
+
+<span class="attr">#[derive(Serialize, Deserialize)]</span>
+<span class="kw">struct</span> <span class="type">User</span> {
+    id: <span class="type">u32</span>,
+    name: <span class="type">String</span>,
+    email: <span class="type">String</span>,
+}
+
+<span class="attr">#[tauri::command]</span>
+<span class="kw">fn</span> <span class="fn">get_user</span>(id: <span class="type">u32</span>) -> <span class="type">Result</span>&lt;<span class="type">User</span>, <span class="type">String</span>&gt; {
+    <span class="cmt">// DB 조회 등...</span>
+    <span class="type">Ok</span>(<span class="type">User</span> { id, name: <span class="str">"Alice"</span>.into(), email: <span class="str">"alice@example.com"</span>.into() })
+}</code></pre>
+
+    <div class="tip"><strong>실무 팁:</strong> Command 이름은 snake_case (Rust 관례). JS에서 호출 시 camelCase로도 쓸 수 있도록 <code>convert_case</code>를 쓰거나, 그냥 snake_case 그대로 사용합니다. Tauri 2.0에서는 기본적으로 camelCase 변환을 지원합니다.</div>
+  </div>
+
+  <!-- B5: Events -->
+  <div class="card" id="b5">
+    <div class="card-title"><span class="icon">📢</span> Events 시스템</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p>Commands가 요청-응답(Request-Response) 방식이라면, <strong>Events</strong>는 단방향 메시지 브로드캐스트입니다. 백그라운드 작업 진행률, 실시간 데이터 스트리밍 등에 활용합니다.</p>
+
+    <h3>Rust → Frontend (이벤트 발행)</h3>
+    <pre><code><span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">long_task</span>(app: tauri::<span class="type">AppHandle</span>) {
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="num">0</span>..<span class="num">100</span> {
+        <span class="cmt">// 진행률 이벤트 발행</span>
+        app.<span class="fn">emit</span>(<span class="str">"progress"</span>, i).unwrap();
+        tokio::time::<span class="fn">sleep</span>(Duration::from_millis(<span class="num">50</span>)).await;
+    }
+    app.<span class="fn">emit</span>(<span class="str">"task-complete"</span>, <span class="str">"done"</span>).unwrap();
+}</code></pre>
+
+    <h3>Frontend → Rust (이벤트 수신)</h3>
+    <pre><code><span class="kw">import</span> { listen } <span class="kw">from</span> <span class="str">'@tauri-apps/api/event'</span>;
+
+<span class="cmt">// 이벤트 구독</span>
+<span class="kw">const</span> unlisten = <span class="kw">await</span> <span class="fn">listen</span>&lt;<span class="type">number</span>&gt;(<span class="str">'progress'</span>, (event) => {
+    <span class="fn">setProgress</span>(event.payload);   <span class="cmt">// event.payload = 진행률</span>
+});
+
+<span class="cmt">// 컴포넌트 언마운트 시 구독 해제 (메모리 누수 방지)</span>
+<span class="kw">return</span> () => <span class="fn">unlisten</span>();</code></pre>
+
+    <h3>Commands vs Events 선택 기준</h3>
+    <table>
+      <thead><tr><th>상황</th><th>Commands</th><th>Events</th></tr></thead>
+      <tbody>
+        <tr><td>단순 데이터 조회</td><td>✅ 적합</td><td>-</td></tr>
+        <tr><td>비즈니스 로직 실행</td><td>✅ 적합</td><td>-</td></tr>
+        <tr><td>파일 다운로드 진행률</td><td>-</td><td>✅ 적합</td></tr>
+        <tr><td>실시간 로그 스트리밍</td><td>-</td><td>✅ 적합</td></tr>
+        <tr><td>OS 알림 (트레이 클릭)</td><td>-</td><td>✅ 적합</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- B6: 설정 파일 -->
+  <div class="card" id="b6">
+    <div class="card-title"><span class="icon">⚙️</span> 설정 파일 (tauri.conf.json)</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p><code>tauri.conf.json</code>은 앱의 모든 메타데이터와 동작을 제어하는 핵심 설정 파일입니다.</p>
+    <pre><code>{
+  <span class="attr">"productName"</span>: <span class="str">"MyApp"</span>,
+  <span class="attr">"version"</span>: <span class="str">"1.0.0"</span>,
+  <span class="attr">"identifier"</span>: <span class="str">"com.example.myapp"</span>,  <span class="cmt">// 번들 ID (iOS/macOS)</span>
+  <span class="attr">"build"</span>: {
+    <span class="attr">"beforeDevCommand"</span>: <span class="str">"npm run dev"</span>,    <span class="cmt">// tauri dev 실행 전 명령</span>
+    <span class="attr">"devUrl"</span>: <span class="str">"http://localhost:5173"</span>,     <span class="cmt">// 프론트엔드 개발 서버</span>
+    <span class="attr">"beforeBuildCommand"</span>: <span class="str">"npm run build"</span>,
+    <span class="attr">"frontendDist"</span>: <span class="str">"../dist"</span>               <span class="cmt">// 빌드 결과물 경로</span>
+  },
+  <span class="attr">"app"</span>: {
+    <span class="attr">"windows"</span>: [{
+      <span class="attr">"title"</span>: <span class="str">"My App"</span>,
+      <span class="attr">"width"</span>: <span class="num">1200</span>,
+      <span class="attr">"height"</span>: <span class="num">800</span>,
+      <span class="attr">"resizable"</span>: <span class="kw">true</span>,
+      <span class="attr">"decorations"</span>: <span class="kw">true</span>,         <span class="cmt">// 타이틀바 표시 여부</span>
+      <span class="attr">"transparent"</span>: <span class="kw">false</span>
+    }],
+    <span class="attr">"security"</span>: {
+      <span class="attr">"csp"</span>: <span class="str">"default-src 'self'; img-src 'self' data:"</span>
+    }
+  },
+  <span class="attr">"bundle"</span>: {
+    <span class="attr">"active"</span>: <span class="kw">true</span>,
+    <span class="attr">"targets"</span>: <span class="str">"all"</span>,              <span class="cmt">// "msi", "dmg", "deb", "appimage", "all"</span>
+    <span class="attr">"icon"</span>: [<span class="str">"icons/32x32.png"</span>, <span class="str">"icons/icon.icns"</span>, <span class="str">"icons/icon.ico"</span>]
+  }
+}</code></pre>
+
+    <!-- 면접 B -->
+    <hr class="divider" />
+    <h3 style="color:var(--accent3)">초급 면접 질문</h3>
+
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri와 Electron의 가장 큰 차이점은 무엇인가요?</div>
+      <div class="qa-a">A. 가장 큰 차이는 WebView 접근 방식입니다. Electron은 Chromium을 앱에 직접 번들하여 일관된 렌더링을 보장하지만 앱 크기가 100MB 이상이 됩니다. Tauri는 OS 기본 WebView(WKWebView/WebView2/WebKitGTK)를 사용하여 앱 크기를 5–15MB로 줄이고 메모리 사용량도 낮춥니다. 또한 백엔드를 Node.js 대신 Rust로 작성하여 성능과 보안이 향상됩니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri에서 프론트엔드와 백엔드가 통신하는 방법은?</div>
+      <div class="qa-a">A. IPC(Inter-Process Communication) 방식으로 통신합니다. 두 가지 방법이 있습니다: (1) Commands — JS에서 <code>invoke('command_name', args)</code>를 호출하면 Rust의 <code>#[tauri::command]</code> 함수가 실행되어 결과를 Promise로 반환합니다. (2) Events — Rust에서 <code>app.emit()</code>으로 이벤트를 발행하면 JS에서 <code>listen()</code>으로 수신합니다. 단방향 스트리밍 시나리오(진행률, 실시간 데이터)에 적합합니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri 앱에서 Rust를 왜 사용하나요? Node.js를 쓰면 안 되나요?</div>
+      <div class="qa-a">A. Tauri의 백엔드는 Rust로 고정되어 있습니다. Rust를 선택한 이유는 메모리 안전성(GC 없이 메모리 오류 방지), 네이티브 성능, 작은 바이너리 크기 때문입니다. 단, 백엔드 비즈니스 로직 일부를 Node.js로 처리하고 싶다면 Tauri 앱 내에서 sidecar(사이드카) 프로세스로 Node.js 서버를 실행하는 방법이 있습니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. <code>tauri.conf.json</code>의 역할은 무엇인가요?</div>
+      <div class="qa-a">A. 앱의 메타데이터(이름, 버전, 번들 ID)부터 윈도우 크기, 보안 정책(CSP, 권한 허용 목록), 빌드 설정, 업데이트 서버 설정까지 모든 Tauri 설정을 담는 중앙 설정 파일입니다. package.json + 프레임워크 설정 + 앱 매니페스트를 합쳐 놓은 것으로 이해하면 됩니다.</div>
+    </div>
+  </div>
+
+  <!-- ══════════════ INTERMEDIATE ══════════════ -->
+  <div class="level-header" id="intermediate">
+    <span class="level-badge lv-inter">INTERMEDIATE</span>
+    <h2>중급</h2>
+  </div>
+
+  <!-- I1: State -->
+  <div class="card" id="i1">
+    <div class="card-title"><span class="icon">🗄️</span> 상태 관리 (State Management)</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p>Tauri는 앱 전역 상태를 Rust 타입 시스템으로 안전하게 관리합니다. <code>manage()</code>로 상태를 등록하고, Command 파라미터로 <code>State&lt;T&gt;</code>를 받아 접근합니다.</p>
+
+    <h3>기본 State 사용</h3>
+    <pre><code><span class="kw">use</span> std::sync::Mutex;
+<span class="kw">use</span> tauri::State;
+
+<span class="cmt">// 공유 상태 타입</span>
+<span class="kw">struct</span> <span class="type">AppState</span> {
+    counter: <span class="type">Mutex</span>&lt;<span class="type">u32</span>&gt;,
+    user_name: <span class="type">Mutex</span>&lt;<span class="type">String</span>&gt;,
+}
+
+<span class="attr">#[tauri::command]</span>
+<span class="kw">fn</span> <span class="fn">increment</span>(state: <span class="type">State</span>&lt;<span class="type">AppState</span>&gt;) -> <span class="type">u32</span> {
+    <span class="kw">let mut</span> counter = state.counter.<span class="fn">lock</span>().<span class="fn">unwrap</span>();
+    *counter += <span class="num">1</span>;
+    *counter
+}
+
+<span class="cmt">// 앱 시작 시 상태 등록</span>
+<span class="kw">pub fn</span> <span class="fn">run</span>() {
+    tauri::Builder::default()
+        .<span class="fn">manage</span>(<span class="type">AppState</span> {
+            counter: <span class="type">Mutex</span>::<span class="fn">new</span>(<span class="num">0</span>),
+            user_name: <span class="type">Mutex</span>::<span class="fn">new</span>(<span class="type">String</span>::<span class="fn">new</span>()),
+        })
+        .invoke_handler(tauri::<span class="fn">generate_handler!</span>[increment])
+        .<span class="fn">run</span>(tauri::<span class="fn">generate_context!</span>())
+        .<span class="fn">unwrap</span>();
+}</code></pre>
+
+    <h3>DB 연동 실무 패턴</h3>
+    <pre><code><span class="kw">use</span> sqlx::SqlitePool;
+
+<span class="kw">struct</span> <span class="type">DbState</span>(SqlitePool);
+
+<span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">get_users</span>(state: <span class="type">State</span>&lt;<span class="type">'_</span>, <span class="type">DbState</span>&gt;) -> <span class="type">Result</span>&lt;<span class="type">Vec</span>&lt;<span class="type">User</span>&gt;, <span class="type">String</span>&gt; {
+    sqlx::<span class="fn">query_as!</span>(<span class="type">User</span>, <span class="str">"SELECT * FROM users"</span>)
+        .<span class="fn">fetch_all</span>(&state.<span class="num">0</span>)
+        .await
+        .map_err(|e| e.<span class="fn">to_string</span>())
+}
+
+<span class="cmt">// 앱 시작 시 DB 초기화</span>
+<span class="attr">#[cfg_attr(mobile, tauri::mobile_entry_point)]</span>
+<span class="kw">pub fn</span> <span class="fn">run</span>() {
+    tauri::async_runtime::<span class="fn">block_on</span>(<span class="kw">async</span> {
+        <span class="kw">let</span> pool = SqlitePool::<span class="fn">connect</span>(<span class="str">"sqlite:app.db"</span>).await.<span class="fn">unwrap</span>();
+        tauri::Builder::default()
+            .<span class="fn">manage</span>(<span class="type">DbState</span>(pool))
+            ...
+    });
+}</code></pre>
+
+    <div class="tip"><strong>Mutex vs RwLock:</strong> 읽기 비중이 높다면 <code>RwLock</code>이 성능상 유리합니다. 단순한 경우 <code>Mutex</code>가 더 안전합니다.</div>
+  </div>
+
+  <!-- I2: 파일시스템 -->
+  <div class="card" id="i2">
+    <div class="card-title"><span class="icon">📁</span> 파일시스템 & 다이얼로그</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <h3>경로 API (app_data_dir 등)</h3>
+    <pre><code><span class="cmt">// Rust — 안전한 경로 접근</span>
+<span class="kw">use</span> tauri::Manager;
+
+<span class="attr">#[tauri::command]</span>
+<span class="kw">fn</span> <span class="fn">get_app_dir</span>(app: tauri::<span class="type">AppHandle</span>) -> <span class="type">String</span> {
+    app.<span class="fn">path</span>()
+        .<span class="fn">app_data_dir</span>()
+        .<span class="fn">unwrap</span>()
+        .<span class="fn">to_string_lossy</span>()
+        .<span class="fn">to_string</span>()
+    <span class="cmt">// macOS: ~/Library/Application Support/com.example.app</span>
+    <span class="cmt">// Windows: %APPDATA%\com.example.app</span>
+    <span class="cmt">// Linux: ~/.local/share/com.example.app</span>
+}</code></pre>
+
+    <h3>파일 읽기/쓰기</h3>
+    <pre><code><span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">write_settings</span>(
+    app: tauri::<span class="type">AppHandle</span>,
+    content: <span class="type">String</span>,
+) -> <span class="type">Result</span>&lt;(), <span class="type">String</span>&gt; {
+    <span class="kw">let mut</span> path = app.<span class="fn">path</span>().<span class="fn">app_data_dir</span>().<span class="fn">unwrap</span>();
+    path.<span class="fn">push</span>(<span class="str">"settings.json"</span>);
+    std::fs::<span class="fn">write</span>(path, content).map_err(|e| e.<span class="fn">to_string</span>())
+}</code></pre>
+
+    <h3>파일 선택 다이얼로그</h3>
+    <pre><code><span class="cmt">// JS — 파일 열기 다이얼로그</span>
+<span class="kw">import</span> { open, save } <span class="kw">from</span> <span class="str">'@tauri-apps/plugin-dialog'</span>;
+
+<span class="cmt">// 파일 열기</span>
+<span class="kw">const</span> filePath = <span class="kw">await</span> <span class="fn">open</span>({
+    multiple: <span class="kw">false</span>,
+    filters: [{ name: <span class="str">'JSON'</span>, extensions: [<span class="str">'json'</span>] }]
+});
+
+<span class="cmt">// 저장 다이얼로그</span>
+<span class="kw">const</span> savePath = <span class="kw">await</span> <span class="fn">save</span>({
+    filters: [{ name: <span class="str">'Text'</span>, extensions: [<span class="str">'txt'</span>] }],
+    defaultPath: <span class="str">'~/Desktop/output.txt'</span>
+});</code></pre>
+
+    <div class="warn"><strong>보안 주의:</strong> Tauri 1.x에서는 <code>allowlist.fs</code>에서 접근 허용 경로를 명시적으로 설정해야 합니다. Tauri 2.0에서는 capabilities JSON으로 권한을 선언합니다. 임의 경로 접근은 기본적으로 차단됩니다.</div>
+  </div>
+
+  <!-- I3: HTTP -->
+  <div class="card" id="i3">
+    <div class="card-title"><span class="icon">🌐</span> HTTP 클라이언트 & 외부 API 호출</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p>Tauri 앱에서 외부 HTTP 요청은 <strong>프론트엔드(fetch)</strong>와 <strong>Rust 백엔드(reqwest)</strong> 두 가지 방법으로 처리할 수 있습니다.</p>
+
+    <table>
+      <thead><tr><th>방법</th><th>장점</th><th>단점</th><th>적합한 경우</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>프론트엔드 fetch</td>
+          <td>간단, 익숙한 방식</td>
+          <td>CSP 제한, CORS 문제</td>
+          <td>단순 공개 API 호출</td>
+        </tr>
+        <tr>
+          <td>Rust reqwest</td>
+          <td>CORS 우회, API 키 보호, 고성능</td>
+          <td>Rust 코드 필요</td>
+          <td>API 키 포함 요청, 대용량 다운로드</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Rust로 외부 API 호출 (API 키 보호)</h3>
+    <pre><code><span class="cmt">// Cargo.toml</span>
+[dependencies]
+reqwest = { version = <span class="str">"0.12"</span>, features = [<span class="str">"json"</span>] }
+serde_json = <span class="str">"1.0"</span>
+
+<span class="cmt">// lib.rs</span>
+<span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">call_openai</span>(prompt: <span class="type">String</span>) -> <span class="type">Result</span>&lt;<span class="type">String</span>, <span class="type">String</span>&gt; {
+    <span class="kw">let</span> api_key = std::env::<span class="fn">var</span>(<span class="str">"OPENAI_API_KEY"</span>)
+        .map_err(|_| <span class="str">"API key not set"</span>.<span class="fn">to_string</span>())?;
+
+    <span class="kw">let</span> client = reqwest::Client::<span class="fn">new</span>();
+    <span class="kw">let</span> response = client
+        .<span class="fn">post</span>(<span class="str">"https://api.openai.com/v1/chat/completions"</span>)
+        .<span class="fn">bearer_auth</span>(api_key)
+        .<span class="fn">json</span>(&serde_json::<span class="fn">json!</span>({
+            <span class="str">"model"</span>: <span class="str">"gpt-4"</span>,
+            <span class="str">"messages"</span>: [{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: prompt}]
+        }))
+        .<span class="fn">send</span>().await
+        .map_err(|e| e.<span class="fn">to_string</span>())?
+        .<span class="fn">text</span>().await
+        .map_err(|e| e.<span class="fn">to_string</span>())?;
+
+    <span class="type">Ok</span>(response)
+}
+<span class="cmt">// API 키가 Rust 코드 안에만 있어 JS에 노출되지 않음</span></code></pre>
+  </div>
+
+  <!-- I4: 플러그인 -->
+  <div class="card" id="i4">
+    <div class="card-title"><span class="icon">🧩</span> 플러그인 시스템</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p>Tauri 2.0에서 대부분의 네이티브 기능이 플러그인으로 분리되었습니다. 필요한 기능만 추가하는 방식으로 번들 크기를 최적화합니다.</p>
+
+    <h3>주요 공식 플러그인</h3>
+    <table>
+      <thead><tr><th>플러그인</th><th>기능</th><th>설치</th></tr></thead>
+      <tbody>
+        <tr><td>tauri-plugin-fs</td><td>파일시스템 접근</td><td><code>cargo add tauri-plugin-fs</code></td></tr>
+        <tr><td>tauri-plugin-dialog</td><td>파일/폴더 다이얼로그</td><td><code>cargo add tauri-plugin-dialog</code></td></tr>
+        <tr><td>tauri-plugin-http</td><td>HTTP 클라이언트</td><td><code>cargo add tauri-plugin-http</code></td></tr>
+        <tr><td>tauri-plugin-shell</td><td>외부 프로세스/쉘 실행</td><td><code>cargo add tauri-plugin-shell</code></td></tr>
+        <tr><td>tauri-plugin-store</td><td>키-값 영구 저장소</td><td><code>cargo add tauri-plugin-store</code></td></tr>
+        <tr><td>tauri-plugin-notification</td><td>OS 알림</td><td><code>cargo add tauri-plugin-notification</code></td></tr>
+        <tr><td>tauri-plugin-updater</td><td>자동 업데이트</td><td><code>cargo add tauri-plugin-updater</code></td></tr>
+        <tr><td>tauri-plugin-sql</td><td>SQLite/MySQL/Postgres</td><td><code>cargo add tauri-plugin-sql</code></td></tr>
+      </tbody>
+    </table>
+
+    <h3>플러그인 등록</h3>
+    <pre><code><span class="cmt">// src-tauri/src/lib.rs</span>
+<span class="kw">pub fn</span> <span class="fn">run</span>() {
+    tauri::Builder::default()
+        .<span class="fn">plugin</span>(tauri_plugin_fs::<span class="fn">init</span>())
+        .<span class="fn">plugin</span>(tauri_plugin_dialog::<span class="fn">init</span>())
+        .<span class="fn">plugin</span>(tauri_plugin_store::<span class="fn">init</span>())
+        .<span class="fn">invoke_handler</span>(tauri::<span class="fn">generate_handler!</span>[...])
+        ...
+}
+
+<span class="cmt">// JS 사용</span>
+<span class="kw">import</span> { Store } <span class="kw">from</span> <span class="str">'@tauri-apps/plugin-store'</span>;
+<span class="kw">const</span> store = <span class="kw">await</span> Store.<span class="fn">load</span>(<span class="str">'settings.json'</span>);
+<span class="kw">await</span> store.<span class="fn">set</span>(<span class="str">'theme'</span>, <span class="str">'dark'</span>);
+<span class="kw">const</span> theme = <span class="kw">await</span> store.<span class="fn">get</span>&lt;<span class="type">string</span>&gt;(<span class="str">'theme'</span>);</code></pre>
+  </div>
+
+  <!-- I5: 보안 -->
+  <div class="card" id="i5">
+    <div class="card-title"><span class="icon">🔐</span> 보안 모델 & CSP</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <h3>Tauri 보안 철학: Least Privilege (최소 권한)</h3>
+    <p>Tauri는 기본적으로 모든 기능을 <strong>차단</strong>하고 필요한 것만 명시적으로 허용하는 화이트리스트 모델을 따릅니다.</p>
+
+    <h3>Tauri 2.0 Capabilities 시스템</h3>
+    <pre><code><span class="cmt">// src-tauri/capabilities/default.json</span>
+{
+  <span class="attr">"identifier"</span>: <span class="str">"default"</span>,
+  <span class="attr">"description"</span>: <span class="str">"기본 권한 세트"</span>,
+  <span class="attr">"windows"</span>: [<span class="str">"main"</span>],
+  <span class="attr">"permissions"</span>: [
+    <span class="str">"core:default"</span>,
+    <span class="str">"fs:allow-read-text-file"</span>,  <span class="cmt">// 텍스트 파일 읽기만 허용</span>
+    <span class="str">"fs:allow-write-text-file"</span>, <span class="cmt">// 텍스트 파일 쓰기만 허용</span>
+    <span class="str">"dialog:allow-open"</span>,        <span class="cmt">// 파일 열기 다이얼로그만 허용</span>
+    <span class="str">"shell:allow-open"</span>          <span class="cmt">// URL을 기본 브라우저로 열기만 허용</span>
+  ]
+}</code></pre>
+
+    <h3>CSP (Content Security Policy)</h3>
+    <pre><code><span class="cmt">// tauri.conf.json - 외부 API 호출 허용 CSP 예시</span>
+{
+  <span class="attr">"app"</span>: {
+    <span class="attr">"security"</span>: {
+      <span class="attr">"csp"</span>: {
+        <span class="attr">"default-src"</span>: <span class="str">"'self'"</span>,
+        <span class="attr">"connect-src"</span>: <span class="str">"'self' https://api.example.com"</span>,
+        <span class="attr">"img-src"</span>: <span class="str">"'self' data: https:"</span>,
+        <span class="attr">"script-src"</span>: <span class="str">"'self' 'unsafe-inline'"</span>
+      },
+      <span class="attr">"dangerousDisableAssetCspModification"</span>: <span class="kw">false</span>
+    }
+  }
+}</code></pre>
+
+    <h3>XSS 방어 — eval/innerHTML 주의</h3>
+    <div class="warn"><strong>위험:</strong> Tauri 앱에서 <code>innerHTML</code> 또는 <code>eval()</code>로 사용자 입력을 처리하면 XSS를 통해 <code>invoke()</code>가 호출될 수 있습니다. 반드시 React/Vue의 텍스트 바인딩을 사용하거나 DOMPurify로 sanitize하세요.</div>
+  </div>
+
+  <!-- I6: 빌드 & 배포 -->
+  <div class="card" id="i6">
+    <div class="card-title"><span class="icon">📦</span> 빌드 & 배포</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <h3>플랫폼별 빌드 결과물</h3>
+    <table>
+      <thead><tr><th>플랫폼</th><th>결과물 형식</th><th>서명 요구사항</th></tr></thead>
+      <tbody>
+        <tr><td>Windows</td><td>.msi, .exe (NSIS)</td><td>코드 서명 인증서 (선택, Defender 경고 방지)</td></tr>
+        <tr><td>macOS</td><td>.dmg, .app</td><td>Apple Developer 계정 + Notarization 필수</td></tr>
+        <tr><td>Linux</td><td>.deb, .rpm, .AppImage</td><td>선택 (GPG 서명 가능)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>GitHub Actions CI/CD 예시</h3>
+    <pre><code><span class="cmt"># .github/workflows/release.yml</span>
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt install -y libwebkit2gtk-4.1-dev libssl-dev ...
+
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}</code></pre>
+
+    <!-- 면접 I -->
+    <hr class="divider" />
+    <h3 style="color:var(--accent3)">중급 면접 질문</h3>
+
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri에서 API 키를 안전하게 관리하는 방법은?</div>
+      <div class="qa-a">A. API 키를 프론트엔드(JS)에 절대 노출하면 안 됩니다. 대신 Rust Command 안에서 환경 변수(<code>std::env::var</code>) 또는 OS 키체인(<code>tauri-plugin-keystore</code>)에서 읽어 사용합니다. 빌드 시점에 환경 변수로 주입한 경우에도 바이너리 문자열 검색으로 노출될 수 있으므로, 런타임에 키체인/환경 변수에서 로드하는 방식이 가장 안전합니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri의 Capabilities 시스템(2.0)과 Allowlist(1.x)의 차이점은?</div>
+      <div class="qa-a">A. Tauri 1.x의 allowlist는 tauri.conf.json에 boolean 플래그로 기능을 on/off하는 단순한 방식이었습니다. Tauri 2.0의 Capabilities 시스템은 윈도우별로 독립적인 권한 세트를 선언할 수 있어 더 세밀한 권한 제어가 가능합니다. 예를 들어 main 윈도우와 settings 윈도우에 서로 다른 파일 접근 권한을 부여할 수 있습니다. 또한 원격 도메인별 권한도 설정 가능합니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri에서 SQLite를 사용할 때 고려해야 할 사항은?</div>
+      <div class="qa-a">A. (1) DB 파일 경로는 반드시 <code>app_data_dir()</code> 같은 OS 표준 앱 데이터 경로에 저장해야 합니다. (2) 멀티스레드 환경에서 Connection Pool(sqlx의 SqlitePool)을 State로 관리해야 합니다. (3) 앱 배포 후 스키마 변경은 마이그레이션 도구(sqlx-cli의 migrate 기능)로 처리해야 합니다. (4) DB 암호화가 필요하면 SQLCipher를 사용합니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. macOS 배포 시 Notarization이 필요한 이유는?</div>
+      <div class="qa-a">A. Apple의 Gatekeeper 보안 기능 때문입니다. macOS Catalina(10.15)부터 Apple Notarization을 받지 않은 앱은 "악성 소프트웨어가 포함되어 있어 열 수 없습니다" 경고가 표시됩니다. Notarization은 Apple 서버에 앱을 업로드해 악성코드 검사를 받고 공증 티켓을 받는 과정입니다. tauri-action GitHub Action을 사용하면 자동화할 수 있습니다.</div>
+    </div>
+  </div>
+
+  <!-- ══════════════ ADVANCED ══════════════ -->
+  <div class="level-header" id="advanced">
+    <span class="level-badge lv-advanced">ADVANCED</span>
+    <h2>고급</h2>
+  </div>
+
+  <!-- A1: 커스텀 플러그인 -->
+  <div class="card" id="a1">
+    <div class="card-title"><span class="icon">🔧</span> 커스텀 Rust 플러그인 개발</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p>반복 사용되는 기능을 독립 플러그인 crate로 분리하면 재사용성과 테스트 가능성이 높아집니다. 예: 여러 앱에서 공유하는 인증 플러그인, 로깅 플러그인.</p>
+
+    <pre><code><span class="cmt">// my-plugin/src/lib.rs</span>
+<span class="kw">use</span> tauri::{
+    plugin::{Builder, TauriPlugin},
+    Manager, Runtime,
+};
+
+<span class="kw">pub struct</span> <span class="type">MyPlugin</span> {
+    config: <span class="type">PluginConfig</span>,
+}
+
+<span class="kw">impl</span> MyPlugin {
+    <span class="kw">pub fn</span> <span class="fn">new</span>(config: <span class="type">PluginConfig</span>) -> <span class="type">Self</span> {
+        <span class="type">Self</span> { config }
+    }
+}
+
+<span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">plugin_action</span>&lt;R: Runtime&gt;(
+    app: tauri::<span class="type">AppHandle</span>&lt;R&gt;,
+    param: <span class="type">String</span>,
+) -> <span class="type">Result</span>&lt;<span class="type">String</span>, <span class="type">String</span>&gt; {
+    <span class="cmt">// 플러그인 로직</span>
+    <span class="type">Ok</span>(<span class="fn">format!</span>(<span class="str">"processed: {}"</span>, param))
+}
+
+<span class="kw">pub fn</span> <span class="fn">init</span>&lt;R: Runtime&gt;(config: <span class="type">PluginConfig</span>) -> <span class="type">TauriPlugin</span>&lt;R&gt; {
+    Builder::&lt;R&gt;::<span class="fn">new</span>(<span class="str">"my-plugin"</span>)
+        .invoke_handler(tauri::<span class="fn">generate_handler!</span>[plugin_action])
+        .setup(<span class="kw">move</span> |app, _api| {
+            app.<span class="fn">manage</span>(<span class="type">MyPlugin</span>::<span class="fn">new</span>(config.<span class="fn">clone</span>()));
+            <span class="type">Ok</span>(())
+        })
+        .<span class="fn">build</span>()
+}
+
+<span class="cmt">// 앱에서 사용</span>
+tauri::Builder::default()
+    .<span class="fn">plugin</span>(my_plugin::<span class="fn">init</span>(<span class="type">PluginConfig</span> { ... }))
+    ...</code></pre>
+
+    <h3>JS 바인딩 패키지 구조 (npm 배포)</h3>
+    <pre><code>my-plugin/
+├── Cargo.toml              <span class="cmt"># Rust crate</span>
+├── src/
+│   └── lib.rs
+└── guest-js/               <span class="cmt"># JS/TS 바인딩</span>
+    ├── package.json
+    ├── index.ts
+    └── dist/</code></pre>
+  </div>
+
+  <!-- A2: 멀티윈도우 & 트레이 -->
+  <div class="card" id="a2">
+    <div class="card-title"><span class="icon">🪟</span> 멀티 윈도우 & 시스템 트레이</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <h3>동적 윈도우 생성</h3>
+    <pre><code><span class="kw">use</span> tauri::{WebviewUrl, WebviewWindowBuilder};
+
+<span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">open_settings</span>(app: tauri::<span class="type">AppHandle</span>) {
+    <span class="cmt">// 이미 열려있으면 포커스, 없으면 새로 생성</span>
+    <span class="kw">if let</span> <span class="type">Some</span>(win) = app.<span class="fn">get_webview_window</span>(<span class="str">"settings"</span>) {
+        win.<span class="fn">set_focus</span>().<span class="fn">unwrap</span>();
+        <span class="kw">return</span>;
+    }
+    <span class="type">WebviewWindowBuilder</span>::<span class="fn">new</span>(&app, <span class="str">"settings"</span>, <span class="type">WebviewUrl</span>::<span class="fn">App</span>(<span class="str">"/settings"</span>.<span class="fn">into</span>()))
+        .<span class="fn">title</span>(<span class="str">"Settings"</span>)
+        .<span class="fn">inner_size</span>(<span class="num">600.0</span>, <span class="num">500.0</span>)
+        .<span class="fn">resizable</span>(<span class="kw">false</span>)
+        .<span class="fn">build</span>()
+        .<span class="fn">unwrap</span>();
+}
+
+<span class="cmt">// 윈도우 간 통신</span>
+<span class="attr">#[tauri::command]</span>
+<span class="kw">fn</span> <span class="fn">send_to_main</span>(app: tauri::<span class="type">AppHandle</span>, data: <span class="type">String</span>) {
+    <span class="kw">if let</span> <span class="type">Some</span>(main) = app.<span class="fn">get_webview_window</span>(<span class="str">"main"</span>) {
+        main.<span class="fn">emit</span>(<span class="str">"from-settings"</span>, data).<span class="fn">unwrap</span>();
+    }
+}</code></pre>
+
+    <h3>시스템 트레이 (System Tray)</h3>
+    <pre><code><span class="kw">use</span> tauri::{
+    menu::{Menu, MenuItem},
+    tray::{TrayIcon, TrayIconBuilder},
+};
+
+<span class="kw">fn</span> <span class="fn">setup_tray</span>(app: &mut tauri::<span class="type">App</span>) -> <span class="type">Result</span>&lt;(), <span class="type">Box</span>&lt;<span class="kw">dyn</span> std::error::<span class="type">Error</span>&gt;&gt; {
+    <span class="kw">let</span> show = <span class="type">MenuItem</span>::<span class="fn">with_id</span>(app, <span class="str">"show"</span>, <span class="str">"Show"</span>, <span class="kw">true</span>, <span class="type">None</span>::&lt;&str&gt;)?;
+    <span class="kw">let</span> quit = <span class="type">MenuItem</span>::<span class="fn">with_id</span>(app, <span class="str">"quit"</span>, <span class="str">"Quit"</span>, <span class="kw">true</span>, <span class="type">None</span>::&lt;&str&gt;)?;
+    <span class="kw">let</span> menu = <span class="type">Menu</span>::<span class="fn">with_items</span>(app, &[&show, &quit])?;
+
+    <span class="type">TrayIconBuilder</span>::<span class="fn">new</span>()
+        .<span class="fn">icon</span>(app.<span class="fn">default_window_icon</span>().<span class="fn">unwrap</span>().<span class="fn">clone</span>())
+        .<span class="fn">menu</span>(&menu)
+        .<span class="fn">on_menu_event</span>(<span class="kw">move</span> |app, event| <span class="kw">match</span> event.<span class="fn">id</span>().<span class="fn">as_ref</span>() {
+            <span class="str">"show"</span> => {
+                app.<span class="fn">get_webview_window</span>(<span class="str">"main"</span>).<span class="fn">unwrap</span>().<span class="fn">show</span>().<span class="fn">unwrap</span>();
+            }
+            <span class="str">"quit"</span> => app.<span class="fn">exit</span>(<span class="num">0</span>),
+            _ => {}
+        })
+        .<span class="fn">build</span>(app)?;
+    <span class="type">Ok</span>(())
+}
+
+<span class="cmt">// 앱 종료 시 트레이로 숨기기</span>
+tauri::Builder::default()
+    .<span class="fn">setup</span>(|app| { <span class="fn">setup_tray</span>(app)?; <span class="type">Ok</span>(()) })
+    .<span class="fn">on_window_event</span>(|window, event| {
+        <span class="kw">if let</span> tauri::<span class="type">WindowEvent</span>::<span class="type">CloseRequested</span> { api, .. } = event {
+            window.<span class="fn">hide</span>().<span class="fn">unwrap</span>();
+            api.<span class="fn">prevent_close</span>();  <span class="cmt">// 실제 종료 방지</span>
+        }
+    })</code></pre>
+  </div>
+
+  <!-- A3: 자동 업데이트 -->
+  <div class="card" id="a3">
+    <div class="card-title"><span class="icon">🔄</span> 자동 업데이트 (Updater)</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <h3>업데이트 아키텍처</h3>
+    <div class="diagram">
+App Start
+    │
+    ▼
+Check Update Server (HTTPS)
+    │
+    ├── No Update → Continue
+    │
+    └── Update Available
+            │
+            ▼
+        Show Dialog to User
+            │
+            ├── Cancel → Continue
+            │
+            └── Confirm
+                    │
+                    ▼
+                Download .zip/.nsis (검증: Ed25519 서명)
+                    │
+                    ▼
+                Install & Restart</div>
+
+    <h3>Rust 구현</h3>
+    <pre><code><span class="cmt">// Cargo.toml</span>
+tauri-plugin-updater = <span class="str">"2.0"</span>
+
+<span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">check_for_updates</span>(app: tauri::<span class="type">AppHandle</span>) -> <span class="type">Result</span>&lt;<span class="type">bool</span>, <span class="type">String</span>&gt; {
+    <span class="kw">let</span> updater = app.<span class="fn">updater</span>().map_err(|e| e.<span class="fn">to_string</span>())?;
+    <span class="kw">match</span> updater.<span class="fn">check</span>().await.map_err(|e| e.<span class="fn">to_string</span>())? {
+        <span class="type">Some</span>(update) => {
+            <span class="cmt">// 업데이트 다운로드 및 설치</span>
+            update.<span class="fn">download_and_install</span>(<span class="kw">move</span> |chunk_len, content_len| {
+                <span class="cmt">// 진행률 처리</span>
+            }, || {
+                <span class="cmt">// 완료 처리</span>
+            }).await.map_err(|e| e.<span class="fn">to_string</span>())?;
+            <span class="type">Ok</span>(<span class="kw">true</span>)
+        }
+        <span class="type">None</span> => <span class="type">Ok</span>(<span class="kw">false</span>)
+    }
+}</code></pre>
+
+    <h3>업데이트 서버 JSON 형식</h3>
+    <pre><code>{
+  <span class="attr">"version"</span>: <span class="str">"v2.1.0"</span>,
+  <span class="attr">"notes"</span>: <span class="str">"버그 수정 및 성능 개선"</span>,
+  <span class="attr">"pub_date"</span>: <span class="str">"2025-01-01T00:00:00Z"</span>,
+  <span class="attr">"platforms"</span>: {
+    <span class="attr">"darwin-aarch64"</span>: {
+      <span class="attr">"signature"</span>: <span class="str">"dW50cnVzdGVkIGNvbW1lbnQ..."</span>,  <span class="cmt">// Ed25519 서명</span>
+      <span class="attr">"url"</span>: <span class="str">"https://releases.example.com/v2.1.0/app-aarch64.tar.gz"</span>
+    },
+    <span class="attr">"windows-x86_64"</span>: {
+      <span class="attr">"signature"</span>: <span class="str">"dW50cnVzdGVkIGNvbW1lbnQ..."</span>,
+      <span class="attr">"url"</span>: <span class="str">"https://releases.example.com/v2.1.0/app-x86_64-setup.nsis.zip"</span>
+    }
+  }
+}</code></pre>
+
+    <div class="tip"><strong>보안:</strong> Tauri의 업데이터는 Ed25519 서명으로 무결성을 검증합니다. <code>tauri signer generate</code>로 키 페어를 생성하고, 공개키는 <code>tauri.conf.json</code>에, 개인키는 GitHub Secrets에 보관하세요.</div>
+  </div>
+
+  <!-- A4: Tauri 2.0 & 모바일 -->
+  <div class="card" id="a4">
+    <div class="card-title"><span class="icon">📱</span> Tauri 2.0 & 모바일 지원</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <p>Tauri 2.0 (2024년 10월 정식 출시)의 가장 큰 변화는 <strong>iOS / Android 지원</strong>과 완전히 재설계된 권한 시스템입니다.</p>
+
+    <h3>Tauri 1.x vs 2.0 주요 변경점</h3>
+    <table>
+      <thead><tr><th>항목</th><th>Tauri 1.x</th><th>Tauri 2.0</th></tr></thead>
+      <tbody>
+        <tr><td>모바일 지원</td><td>없음</td><td>iOS + Android</td></tr>
+        <tr><td>권한 시스템</td><td>allowlist (conf.json)</td><td>Capabilities (JSON 파일)</td></tr>
+        <tr><td>IPC API</td><td>@tauri-apps/api/tauri</td><td>@tauri-apps/api/core</td></tr>
+        <tr><td>플러그인</td><td>내장</td><td>별도 crate로 분리</td></tr>
+        <tr><td>Window API</td><td>WebviewWindow 통합</td><td>Window + Webview 분리</td></tr>
+        <tr><td>멀티 WebView</td><td>윈도우당 1개</td><td>윈도우당 N개 지원</td></tr>
+      </tbody>
+    </table>
+
+    <h3>모바일 개발 설정</h3>
+    <pre><code><span class="cmt"># iOS 개발 (macOS + Xcode 필요)</span>
+rustup target add aarch64-apple-ios x86_64-apple-ios
+npm run tauri ios init
+npm run tauri ios dev
+
+<span class="cmt"># Android 개발 (Android Studio + NDK 필요)</span>
+rustup target add aarch64-linux-android armv7-linux-androideabi
+npm run tauri android init
+npm run tauri android dev</code></pre>
+
+    <h3>모바일/데스크탑 조건부 코드</h3>
+    <pre><code><span class="cmt">// Rust — cfg 매크로로 플랫폼 분기</span>
+<span class="attr">#[cfg(target_os = "ios")]</span>
+<span class="kw">fn</span> <span class="fn">setup_ios_specific</span>() { ... }
+
+<span class="attr">#[cfg(desktop)]</span>
+<span class="kw">fn</span> <span class="fn">setup_tray</span>(app: &mut tauri::<span class="type">App</span>) { ... }
+
+<span class="cmt">// JS — Tauri API</span>
+<span class="kw">import</span> { platform } <span class="kw">from</span> <span class="str">'@tauri-apps/plugin-os'</span>;
+<span class="kw">const</span> os = <span class="kw">await</span> <span class="fn">platform</span>();  <span class="cmt">// 'macos' | 'windows' | 'linux' | 'ios' | 'android'</span>
+<span class="kw">if</span> (os === <span class="str">'macos'</span>) { <span class="cmt">/* macOS 전용 UI */</span> }</code></pre>
+  </div>
+
+  <!-- A5: 성능 & 보안 -->
+  <div class="card" id="a5">
+    <div class="card-title"><span class="icon">⚡</span> 성능 최적화 & 보안 강화</div>
+    <div class="tabs">
+      <span class="tab-label tab-theory">이론</span>
+      <span class="tab-label tab-practice">실무</span>
+    </div>
+
+    <h3>Rust 빌드 최적화</h3>
+    <pre><code><span class="cmt"># src-tauri/Cargo.toml — 릴리즈 프로파일 최적화</span>
+[profile.release]
+opt-level = <span class="str">"z"</span>      <span class="cmt"># 크기 최적화 (속도보다 작은 바이너리)</span>
+lto = <span class="kw">true</span>           <span class="cmt"># Link-Time Optimization</span>
+codegen-units = <span class="num">1</span>    <span class="cmt"># 단일 코드 생성 유닛 (최대 최적화)</span>
+panic = <span class="str">"abort"</span>      <span class="cmt"># panic 시 스택 언와인딩 생략 (크기 감소)</span>
+strip = <span class="kw">true</span>         <span class="cmt"># 디버그 심볼 제거</span></code></pre>
+
+    <h3>프론트엔드 성능 최적화</h3>
+    <pre><code><span class="cmt">// 대용량 데이터는 Command로 처리 (JS 직렬화 비용 최소화)</span>
+<span class="cmt">// 나쁜 예: JS에서 큰 배열을 직렬화해서 Rust로 전달</span>
+<span class="kw">await</span> <span class="fn">invoke</span>(<span class="str">'process'</span>, { data: hugeArray }); <span class="cmt">// IPC 직렬화 비용 큼</span>
+
+<span class="cmt">// 좋은 예: 파일 경로만 전달하고 Rust에서 직접 처리</span>
+<span class="kw">await</span> <span class="fn">invoke</span>(<span class="str">'process_file'</span>, { path: <span class="str">'/tmp/data.csv'</span> });</code></pre>
+
+    <h3>보안 강화 체크리스트</h3>
+    <pre><code"><span class="cmt">✅ CSP 설정: 필요한 도메인만 connect-src에 명시</span>
+<span class="cmt">✅ Capabilities: 최소 권한 원칙 적용</span>
+<span class="cmt">✅ dangerousRemoteDomainIpcAccess: 사용 금지</span>
+<span class="cmt">✅ 사용자 입력 sanitize: innerHTML 대신 textContent 사용</span>
+<span class="cmt">✅ Command 파라미터 검증: 경로 traversal 방지</span>
+<span class="cmt">✅ 의존성 감사: cargo audit, npm audit 정기 실행</span>
+<span class="cmt">✅ 업데이트 서명: Ed25519 키 분실 대비 백업</span></code></pre>
+
+    <h3>Command 파라미터 검증 예시</h3>
+    <pre><code><span class="attr">#[tauri::command]</span>
+<span class="kw">fn</span> <span class="fn">read_user_file</span>(
+    app: tauri::<span class="type">AppHandle</span>,
+    filename: <span class="type">String</span>,
+) -> <span class="type">Result</span>&lt;<span class="type">String</span>, <span class="type">String</span>&gt; {
+    <span class="cmt">// Path traversal 방어: ../../../etc/passwd 같은 패턴 차단</span>
+    <span class="kw">if</span> filename.<span class="fn">contains</span>(<span class="str">".."</span>) || filename.<span class="fn">contains</span>(<span class="str">"/"</span>) {
+        <span class="kw">return</span> <span class="type">Err</span>(<span class="str">"invalid filename"</span>.<span class="fn">to_string</span>());
+    }
+    <span class="kw">let mut</span> path = app.<span class="fn">path</span>().<span class="fn">app_data_dir</span>().<span class="fn">unwrap</span>();
+    path.<span class="fn">push</span>(&filename);
+    std::fs::<span class="fn">read_to_string</span>(path).map_err(|e| e.<span class="fn">to_string</span>())
+}</code></pre>
+
+    <h3>비동기 처리 패턴</h3>
+    <pre><code><span class="cmt">// Tauri는 tokio 런타임을 사용 — async Command 권장</span>
+<span class="attr">#[tauri::command]</span>
+<span class="kw">async fn</span> <span class="fn">parallel_fetch</span>() -> <span class="type">Result</span>&lt;<span class="type">Vec</span>&lt;<span class="type">String</span>&gt;, <span class="type">String</span>&gt; {
+    <span class="kw">let</span> urls = <span class="fn">vec!</span>[<span class="str">"https://a.com"</span>, <span class="str">"https://b.com"</span>, <span class="str">"https://c.com"</span>];
+    <span class="kw">let</span> tasks: <span class="type">Vec</span>&lt;_&gt; = urls.<span class="fn">iter</span>()
+        .<span class="fn">map</span>(|url| tokio::<span class="fn">spawn</span>(<span class="kw">async move</span> {
+            reqwest::<span class="fn">get</span>(url).await?.<span class="fn">text</span>().await
+        }))
+        .<span class="fn">collect</span>();
+
+    <span class="kw">let</span> results = futures::<span class="fn">future</span>::<span class="fn">join_all</span>(tasks).await;
+    <span class="cmt">// 병렬로 3개 URL 동시 처리</span>
+    ...
+}</code></pre>
+
+    <!-- 면접 A -->
+    <hr class="divider" />
+    <h3 style="color:var(--accent3)">고급 면접 질문</h3>
+
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri에서 메모리 안전성이 어떻게 보장되나요?</div>
+      <div class="qa-a">A. Rust의 소유권(Ownership) 시스템이 컴파일 타임에 메모리 오류(use-after-free, double-free, buffer overflow)를 방지합니다. GC(가비지 컬렉터) 없이도 메모리를 안전하게 관리하므로 런타임 오버헤드가 없습니다. Mutex&lt;T&gt;, Arc&lt;T&gt; 등의 타입으로 멀티스레드 공유도 타입 시스템에서 안전성을 보장합니다. 이것이 Electron(Node.js의 V8 GC 의존)과의 근본적인 차이입니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri 앱을 역방향 엔지니어링(리버싱)으로부터 어떻게 보호하나요?</div>
+      <div class="qa-a">A. (1) Rust 바이너리는 LLVM 최적화로 역어셈블리가 어렵습니다. <code>strip = true</code>로 심볼 제거. (2) 프론트엔드 JS는 WebView에서 실행되므로 DevTools 접근을 production 빌드에서 비활성화해야 합니다(<code>devtools = false</code>). (3) 민감한 비즈니스 로직은 반드시 Rust Command로 이동 — JS 코드는 항상 추출 가능하다고 가정해야 합니다. (4) API 키 등 시크릿은 OS 키체인 또는 서버에 보관.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. dangerousRemoteDomainIpcAccess를 절대 사용하면 안 되는 이유는?</div>
+      <div class="qa-a">A. 이 옵션을 활성화하면 WebView가 로드하는 <em>원격 도메인</em>의 JS가 Tauri Command(IPC)를 호출할 수 있게 됩니다. 원격 도메인이 해킹당하거나 CDN이 오염되면, 공격자의 JS가 파일시스템 쓰기, 쉘 실행 등 허용된 모든 Command를 실행할 수 있습니다. Tauri 앱은 항상 로컬 에셋(embedded assets)만 서비스하고, 원격 도메인이 필요한 데이터는 Command를 통해 Rust에서 fetch 후 반환하는 패턴을 사용해야 합니다.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri 2.0에서 멀티 WebView를 어떤 시나리오에서 사용하나요?</div>
+      <div class="qa-a">A. 하나의 네이티브 윈도우 안에 여러 WebView를 분할 배치하는 기능입니다. 예: (1) IDE 스타일 앱에서 에디터 영역과 프리뷰 영역을 완전히 독립된 WebView로 격리 — 프리뷰가 크래시해도 에디터에 영향 없음. (2) 다국어 앱에서 마케팅 사이트(원격)와 앱 UI(로컬)를 동일 윈도우에 표시하되 서로 다른 CSP 적용. (3) 보안 레벨이 다른 두 영역을 격리.</div>
+    </div>
+    <div class="qa-block">
+      <div class="qa-q">Q. Tauri로 대용량 파일(수 GB) 처리를 최적화하는 방법은?</div>
+      <div class="qa-a">A. (1) 파일 경로만 IPC로 전달하고 Rust에서 직접 처리 — JS로 데이터를 주고받지 않음. (2) Rust의 <code>BufReader</code>로 스트리밍 처리. (3) 진행률은 Events로 주기적으로 프론트엔드에 push. (4) 사용자 취소를 위해 <code>tokio::sync::CancellationToken</code> 사용. (5) 메모리 매핑(<code>memmap2</code> crate)으로 OS 레벨 스트리밍 활용.</div>
+    </div>
+  </div>
+
+  <!-- ══════════════ 면접 총정리 ══════════════ -->
+  <div class="level-header" id="interview-all">
+    <span class="level-badge" style="background:rgba(255,169,77,.15);color:var(--accent3)">INTERVIEW</span>
+    <h2>면접 질문 총정리</h2>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">🎯</span> 초급 핵심 질문</div>
+    <div class="qa-block"><div class="qa-q">Q1. Tauri 앱의 번들 크기가 Electron보다 작은 이유는?</div><div class="qa-a">OS에 이미 설치된 WebView(WKWebView/WebView2)를 사용하기 때문에 Chromium을 번들할 필요가 없습니다. Rust 바이너리도 GC와 런타임이 없어 Node.js보다 작습니다.</div></div>
+    <div class="qa-block"><div class="qa-q">Q2. invoke()와 listen()의 차이점은?</div><div class="qa-a">invoke()는 요청-응답 패턴(Promise 반환). listen()은 Rust에서 발행하는 이벤트를 구독하는 단방향 스트림 패턴. 진행률, 실시간 알림 등에 listen() 사용.</div></div>
+    <div class="qa-block"><div class="qa-q">Q3. #[tauri::command] 어노테이션의 역할은?</div><div class="qa-a">Rust 함수를 IPC를 통해 JS에서 호출 가능한 Command로 노출합니다. 함수의 파라미터/반환값은 Serde JSON으로 자동 직렬화/역직렬화됩니다.</div></div>
+    <div class="qa-block"><div class="qa-q">Q4. Tauri 개발 환경에서 Hot Reload가 동작하는 방식은?</div><div class="qa-a">npm run tauri dev 실행 시 Vite dev server가 프론트엔드 HMR을 제공하고, Rust 소스 변경 시 cargo가 재컴파일 후 앱을 재시작합니다. 프론트엔드 변경은 즉시 반영, Rust 변경은 재컴파일 후 반영.</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">🎯</span> 중급 핵심 질문</div>
+    <div class="qa-block"><div class="qa-q">Q5. Tauri State의 Mutex가 필요한 이유는?</div><div class="qa-a">async Command들이 여러 스레드에서 동시에 실행될 수 있기 때문입니다. Rust의 소유권 규칙상 공유 가변 참조는 Mutex(또는 RwLock)로 보호해야 컴파일됩니다. 이를 통해 데이터 레이스를 컴파일 타임에 방지합니다.</div></div>
+    <div class="qa-block"><div class="qa-q">Q6. Tauri 앱에서 SQLite를 사용하는 일반적인 패턴은?</div><div class="qa-a">SqlitePool을 State로 manage()에 등록 → async Command에서 State&lt;DbState&gt;로 주입 → sqlx::query_as!() 매크로로 타입 안전 쿼리 실행. DB 파일은 app_data_dir()에 저장.</div></div>
+    <div class="qa-block"><div class="qa-q">Q7. Content Security Policy(CSP)를 Tauri에서 설정해야 하는 이유는?</div><div class="qa-a">XSS 공격으로 악성 스크립트가 주입되어 invoke()를 호출하는 것을 방지하기 위해서입니다. Tauri 앱은 로컬 파일 접근 등 강력한 권한을 가지므로 XSS의 파급력이 일반 웹보다 훨씬 큽니다.</div></div>
+    <div class="qa-block"><div class="qa-q">Q8. tauri-plugin-store vs 직접 파일 IO의 차이점은?</div><div class="qa-a">tauri-plugin-store는 JSON 파일 기반 키-값 저장소로 쓰기 최적화(디바운스), 타입 안전 API, JS/Rust 양쪽에서 동일 인터페이스 제공. 직접 파일 IO는 더 유연하지만 직렬화, 동시성, 경로 관리를 직접 처리해야 합니다.</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">🎯</span> 고급 핵심 질문</div>
+    <div class="qa-block"><div class="qa-q">Q9. Tauri 커스텀 플러그인과 일반 Command의 차이는?</div><div class="qa-a">플러그인은 독립 Rust crate로 setup 훅, 상태 관리, JS 바인딩 패키지를 포함한 완전한 기능 단위입니다. 여러 앱에서 재사용 가능하고 npm/crates.io에 배포할 수 있습니다. 일반 Command는 하나의 앱 내부 함수입니다.</div></div>
+    <div class="qa-block"><div class="qa-q">Q10. Tauri 업데이터의 Ed25519 서명이 왜 중요한가요?</div><div class="qa-a">업데이트 파일의 무결성과 출처를 보장합니다. 업데이트 서버가 해킹되어 악성 바이너리가 업로드되더라도, 개인키로 서명되지 않은 파일은 설치가 거부됩니다. MITM 공격도 방어합니다. 개인키를 잃으면 이후 업데이트가 불가능하므로 안전한 백업이 필수입니다.</div></div>
+    <div class="qa-block"><div class="qa-q">Q11. Tauri 2.0의 Capabilities 시스템에서 윈도우별 권한 분리의 실용적 예시는?</div><div class="qa-a">예: 메인 윈도우는 파일 읽기/쓰기 모두 허용, 외부 URL을 로드하는 iframe/보조 윈도우는 파일시스템 접근 차단. 또는 관리자 윈도우에만 DB 쓰기 권한 부여, 일반 사용자 윈도우는 읽기만 허용.</div></div>
+    <div class="qa-block"><div class="qa-q">Q12. Tauri 앱에서 긴 작업(백그라운드 처리)을 구현하는 패턴은?</div><div class="qa-a">async Command에서 tokio::spawn으로 백그라운드 태스크 실행 → AppHandle.emit()으로 진행률 이벤트 발행 → 취소는 Arc&lt;Mutex&lt;bool&gt;&gt; 또는 CancellationToken으로 구현 → JS에서 listen()으로 진행률 구독, 취소 버튼은 invoke()로 취소 플래그 설정.</div></div>
+    <div class="qa-block"><div class="qa-q">Q13. Tauri vs Flutter Desktop 선택 기준은?</div><div class="qa-a">Tauri: 기존 웹 스택(React/Vue 등) 재사용, 웹 개발 팀, 번들 크기 최소화, 보안 민감 앱. Flutter: 동일 코드로 모바일+데스크탑 지원, 일관된 커스텀 렌더링, 네이티브 WebView에 의존하지 않는 완전한 커스텀 UI. 웹 기반 UI를 데스크탑으로 포팅한다면 Tauri, 완전히 새로운 크로스플랫폼 앱이라면 Flutter도 고려.</div></div>
+    <div class="qa-block"><div class="qa-q">Q14. Tauri의 sidecar 기능은 무엇이고 어떤 경우에 사용하나요?</div><div class="qa-a">Sidecar는 Tauri 앱과 함께 번들된 외부 실행 파일(바이너리)을 실행하는 기능입니다. 예: Python 스크립트, Node.js 서버, Go 바이너리. Rust로 포팅하기 어려운 기존 비즈니스 로직을 그대로 유지하면서 Tauri 앱에서 제어할 때 사용합니다. IPC는 stdin/stdout 또는 로컬 소켓으로 처리합니다.</div></div>
+  </div>
+
+  <!-- ══════════════ 학습 로드맵 ══════════════ -->
+  <div class="card" style="border-color:rgba(124,92,252,.4)">
+    <div class="card-title"><span class="icon">🗺️</span> 5년차 백엔드 개발자 학습 로드맵</div>
+    <table>
+      <thead><tr><th>단계</th><th>기간</th><th>목표</th><th>핵심 키워드</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span style="color:var(--beginner)">Week 1–2</span></td>
+          <td>2주</td>
+          <td>Rust 기초 + 첫 Tauri 앱 실행</td>
+          <td>소유권, Commands, IPC, tauri.conf.json</td>
+        </tr>
+        <tr>
+          <td><span style="color:var(--yellow)">Week 3–4</span></td>
+          <td>2주</td>
+          <td>State, 파일IO, DB 연동 앱 완성</td>
+          <td>State&lt;T&gt;, Mutex, sqlx, 파일 다이얼로그</td>
+        </tr>
+        <tr>
+          <td><span style="color:var(--yellow)">Week 5–6</span></td>
+          <td>2주</td>
+          <td>보안, 플러그인, 배포 파이프라인</td>
+          <td>Capabilities, CSP, GitHub Actions, 코드사인</td>
+        </tr>
+        <tr>
+          <td><span style="color:var(--red)">Week 7–8</span></td>
+          <td>2주</td>
+          <td>멀티윈도우, 트레이, 자동업데이트</td>
+          <td>TrayIconBuilder, Updater, Ed25519</td>
+        </tr>
+        <tr>
+          <td><span style="color:var(--red)">Week 9–10</span></td>
+          <td>2주</td>
+          <td>커스텀 플러그인, Tauri 2.0 모바일</td>
+          <td>TauriPlugin&lt;R&gt;, iOS/Android build</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="tip"><strong>백엔드 개발자 추천 첫 프로젝트:</strong> 로컬 SQLite에 CRUD 작업을 하는 간단한 메모 앱. REST API 서버를 만들 줄 안다면 Tauri Command는 Controller, State는 Repository 레이어라고 생각하면 Rust 문법만 익히면 됩니다.</div>
+  </div>
+
+</div><!-- /container -->
+
+<!-- ════════════════ FOOTER ════════════════ -->
+<footer style="background:var(--surface);border-top:1px solid var(--border);padding:30px 40px;text-align:center;color:var(--text-muted);font-size:.85rem;">
+  Tauri 완전 정복 가이드 &nbsp;|&nbsp; 기준 버전: Tauri 2.0 (2024.10) &nbsp;|&nbsp; Rust edition 2021
+  <br/>
+  <span style="color:var(--accent)">공식 문서:</span> tauri.app/v2/
+</footer>
+
+</body>
+</html>

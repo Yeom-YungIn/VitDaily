@@ -1,4 +1,5 @@
 import type { AuditCategory, ExecutionMode, PurchaseLog, PurchaseLogSource } from "../types";
+import { friendlySystemText } from "../utils/copy";
 
 interface Props {
   logs?: PurchaseLog[];
@@ -36,12 +37,12 @@ export default function PurchaseLogs({ logs = [], title = "최근 매수 내역"
                 </p>
                 {(log.reason || log.errorMessage) && (
                   <p className="mt-1 max-w-xl text-xs text-red-300">
-                    {log.reason || log.errorMessage}
+                    {friendlySystemText(log.reason || log.errorMessage)}
                   </p>
                 )}
                 {log.strategySignalReason && (
                   <p className="mt-1 max-w-xl text-xs text-cyan-200">
-                    {log.strategySignalReason}
+                    {friendlySystemText(log.strategySignalReason)}
                   </p>
                 )}
               </div>
@@ -104,7 +105,7 @@ function statusColor(status: PurchaseLog["status"]): string {
 }
 
 function actionText(action?: PurchaseLog["action"]): string {
-  if (action === "safety_check") return "안전 게이트 검사";
+  if (action === "safety_check") return "보호장치 검사";
   if (action === "market_sell") return "시장가 매도";
   return "시장가 매수";
 }
@@ -115,15 +116,25 @@ function ModeBadge({ mode }: { mode: ExecutionMode }) {
     : mode === "paper"
       ? "bg-blue-500/10 text-blue-300"
       : "bg-slate-700 text-slate-300";
-  return <span className={`rounded px-2 py-0.5 text-[11px] ${color}`}>{mode}</span>;
+  const label = mode === "live" ? "실거래" : mode === "paper" ? "모의" : "시스템";
+  return <span className={`rounded px-2 py-0.5 text-[11px] ${color}`}>{label}</span>;
 }
 
 function SourceBadge({ source }: { source: PurchaseLogSource }) {
-  const label = source === "legacy_schedule" ? "Legacy Schedule" : source === "investment_thread" ? "Thread" : "System";
+  const label = source === "legacy_schedule" ? "기존 정기매수" : source === "investment_thread" ? "투자 전략" : "시스템";
   return <span className="rounded bg-slate-700 px-2 py-0.5 text-[11px] text-slate-300">{label}</span>;
 }
 
 function CategoryBadge({ category }: { category: AuditCategory }) {
-  const label = category.replace(/_/g, " ");
+  const labels: Record<AuditCategory, string> = {
+    trade: "실제 주문",
+    paper_trade: "모의 주문",
+    blocked_order: "막은 주문",
+    api_failure: "API 실패",
+    safety_gate: "보호장치",
+    validation: "검증",
+    schedule: "정기 매수",
+  };
+  const label = labels[category];
   return <span className="rounded bg-orange-500/10 px-2 py-0.5 text-[11px] text-orange-300">{label}</span>;
 }
