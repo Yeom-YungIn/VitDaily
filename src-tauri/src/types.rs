@@ -142,7 +142,20 @@ impl Default for AuditCategory {
 pub struct ApiStatus {
     pub connected: bool,
     pub has_credentials: bool,
+    pub credential_readiness: CredentialReadinessStatus,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialReadinessStatus {
+    Missing,
+    StoredUnchecked,
+    Connected,
+    InvalidKey,
+    RevokedKey,
+    OrderPermissionMissing,
+    NetworkError,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +171,7 @@ pub struct LiveOrderChanceStatus {
     pub minimum_ask_total_krw: Option<u64>,
     pub market_buy_supported: bool,
     pub market_sell_supported: bool,
+    pub credential_readiness: CredentialReadinessStatus,
     pub block_reasons: Vec<LiveOrderGateBlockReason>,
     pub reason: String,
     pub checked_at: DateTime<Utc>,
@@ -346,6 +360,8 @@ pub enum LiveOrderGateBlockReason {
     LegacyScheduleNotMigrated,
     SettingsUnavailable,
     AuditDataUnavailable,
+    InvalidApiKey,
+    RevokedApiKey,
     InsufficientBalance,
     MinimumOrderAmountNotMet,
     MarketOrderUnavailable,
@@ -465,6 +481,40 @@ pub struct PaperExecutionResult {
     pub duplicate: bool,
     pub log: Option<PurchaseLog>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadAutoLoopMode {
+    Paper,
+    Live,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadAutoLoopAction {
+    PaperTick,
+    LiveMarketBuySubmitted,
+    LiveGateBlocked,
+    DuplicateTick,
+    RetryLimited,
+    Hold,
+    SellSkipped,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadAutoLoopResult {
+    pub thread_id: Uuid,
+    pub mode: ThreadAutoLoopMode,
+    pub action: ThreadAutoLoopAction,
+    pub message: String,
+    pub idempotency_key: Option<String>,
+    pub retry_count: u32,
+    pub paper_result: Option<PaperExecutionResult>,
+    pub live_order_gate: Option<LiveOrderGateDecision>,
+    pub logs: Vec<PurchaseLog>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

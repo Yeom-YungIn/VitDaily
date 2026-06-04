@@ -15,12 +15,19 @@ export default function Dashboard() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>({
     connected: false,
     hasCredentials: false,
+    credentialReadiness: "missing",
   });
 
   useEffect(() => {
     invoke<ApiStatus>("get_api_status")
       .then(setApiStatus)
-      .catch(() => setApiStatus({ connected: false, hasCredentials: false }));
+      .catch(() =>
+        setApiStatus({
+          connected: false,
+          hasCredentials: false,
+          credentialReadiness: "missing",
+        }),
+      );
 
     invoke<PurchaseLog[]>("get_purchase_logs")
       .then((result) => {

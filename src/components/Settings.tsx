@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
-import type { ApiStatus, AppSettings, LiveOrderChanceStatus, LiveOrderGateBlockReason } from "../types";
+import type { ApiStatus, AppSettings, CredentialReadinessStatus, LiveOrderChanceStatus, LiveOrderGateBlockReason } from "../types";
 
 type ConnectionStatus = "idle" | "testing" | "ok" | "error";
 
@@ -14,6 +14,7 @@ export default function Settings() {
   const [strategyLogicApproved, setStrategyLogicApproved] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
   const [hasCredentials, setHasCredentials] = useState(false);
+  const [credentialReadiness, setCredentialReadiness] = useState<CredentialReadinessStatus>("missing");
   const [message, setMessage] = useState("");
   const [chanceStatus, setChanceStatus] = useState<LiveOrderChanceStatus | null>(null);
   const [chanceLoading, setChanceLoading] = useState(false);
@@ -22,30 +23,35 @@ export default function Settings() {
     invoke<ApiStatus>("get_api_status")
       .then((apiStatus) => {
         setHasCredentials(apiStatus.hasCredentials);
+        setCredentialReadiness(apiStatus.credentialReadiness);
         setStatus(apiStatus.connected ? "ok" : "idle");
       })
       .catch(() => setStatus("error"));
 
-    invoke<AppSettings>("get_app_settings")
-      .then((settings) => {
-        setNotificationsEnabled(settings.notificationsEnabled);
-        setGlobalLiveLocked(settings.globalLiveLocked);
-        setStrategyLogicApproved(settings.strategyLogicApproved);
-      })
-      .catch(() => {
-        setNotificationsEnabled(false);
-        setGlobalLiveLocked(true);
-        setStrategyLogicApproved(false);
-      });
+    loadAppSettings();
 
     loadLiveOrderChanceStatus();
   }, []);
+
+  async function loadAppSettings() {
+    try {
+      const settings = await invoke<AppSettings>("get_app_settings");
+      setNotificationsEnabled(settings.notificationsEnabled);
+      setGlobalLiveLocked(settings.globalLiveLocked);
+      setStrategyLogicApproved(settings.strategyLogicApproved);
+    } catch {
+      setNotificationsEnabled(false);
+      setGlobalLiveLocked(true);
+      setStrategyLogicApproved(false);
+    }
+  }
 
   async function loadLiveOrderChanceStatus() {
     setChanceLoading(true);
     try {
       const status = await invoke<LiveOrderChanceStatus>("get_live_order_chance_status");
       setChanceStatus(status);
+      setCredentialReadiness(status.credentialReadiness);
     } catch (error) {
       setChanceStatus(null);
       setMessage(String(error));
@@ -63,8 +69,10 @@ export default function Settings() {
       await invoke("save_api_credentials", { accessKey, secretKey });
       const apiStatus = await invoke<ApiStatus>("test_api_connection");
       setHasCredentials(apiStatus.hasCredentials);
+      setCredentialReadiness(apiStatus.credentialReadiness);
       setStatus(apiStatus.connected ? "ok" : "error");
-      setMessage(apiStatus.error ?? "업비트 API 연결을 확인했습니다");
+      setMessage(apiStatus.error ?? "업비트 API 연결을 확인했습니다. API 키 변경으로 Live readiness와 최종 확인은 해제되었습니다.");
+      await loadAppSettings();
       await loadLiveOrderChanceStatus();
     } catch (error) {
       setStatus("error");
@@ -79,8 +87,10 @@ export default function Settings() {
     try {
       await invoke("save_api_credentials", { accessKey, secretKey });
       setHasCredentials(true);
+      setCredentialReadiness("stored_unchecked");
       setStatus("idle");
-      setMessage("API 키를 OS 키체인에 저장했습니다");
+      setMessage("API 키를 OS 키체인에 저장했고 Live readiness와 최종 확인을 해제했습니다");
+      await loadAppSettings();
       await loadLiveOrderChanceStatus();
     } catch (error) {
       setStatus("error");
@@ -95,8 +105,10 @@ export default function Settings() {
       setSecretKey("");
       setStatus("idle");
       setHasCredentials(false);
+      setCredentialReadiness("missing");
       setChanceStatus(null);
-      setMessage("저장된 API 키를 삭제했습니다");
+      setMessage("저장된 API 키를 삭제했고 Live readiness와 최종 확인을 해제했습니다");
+      await loadAppSettings();
     } catch (error) {
       setStatus("error");
       setMessage(String(error));
@@ -159,6 +171,15 @@ export default function Settings() {
     ok: { text: "연결됨", color: "text-green-400" },
     error: { text: "연결 실패", color: "text-red-400" },
   };
+  const credentialReadinessLabel: Record<CredentialReadinessStatus, { text: string; color: string }> = {
+    missing: { text: "API 키 없음", color: "text-slate-400" },
+    stored_unchecked: { text: "저장됨 · 미검증", color: "text-yellow-300" },
+    connected: { text: "계정 조회 가능", color: "text-green-300" },
+    invalid_key: { text: "Invalid key", color: "text-red-300" },
+    revoked_key: { text: "Revoked key", color: "text-red-300" },
+    order_permission_missing: { text: "주문 권한 없음", color: "text-red-300" },
+    network_error: { text: "확인 실패", color: "text-yellow-300" },
+  };
   const chanceReasonLabel: Record<LiveOrderGateBlockReason, string> = {
     global_live_locked: "Global Live Lock",
     credentials_missing: "API 키 없음",
@@ -173,6 +194,8 @@ export default function Settings() {
     legacy_schedule_not_migrated: "레거시 스케줄 차단",
     settings_unavailable: "설정 로드 실패",
     audit_data_unavailable: "감사 데이터 실패",
+    invalid_api_key: "Invalid API key",
+    revoked_api_key: "Revoked API key",
     insufficient_balance: "잔고 부족",
     minimum_order_amount_not_met: "최소 주문금액 미달",
     market_order_unavailable: "시장가 주문 불가",
@@ -194,6 +217,17 @@ export default function Settings() {
               저장된 API 키가 있습니다. 보안을 위해 기존 키 값은 표시하지 않습니다.
             </p>
           )}
+          <div className="rounded border border-slate-700 bg-slate-900/40 px-3 py-2 text-xs">
+            <p className="text-slate-500">Credential readiness</p>
+            <p className={`mt-1 ${credentialReadinessLabel[credentialReadiness].color}`}>
+              {credentialReadinessLabel[credentialReadiness].text}
+            </p>
+            {["invalid_key", "revoked_key", "order_permission_missing"].includes(credentialReadiness) && (
+              <p className="mt-1 text-red-200/80">
+                이 상태에서는 Live Order Gate가 fail-closed로 차단되며 API 키를 재발급하거나 주문 권한을 추가해야 합니다.
+              </p>
+            )}
+          </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-xs text-slate-400">Access Key</label>
             <input
@@ -332,6 +366,11 @@ export default function Settings() {
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <StatusCell label="상태" value={chanceStatus?.allowed ? "통과" : "차단"} danger={!chanceStatus?.allowed} />
               <StatusCell label="마켓" value={chanceStatus?.market ?? "KRW-BTC"} />
+              <StatusCell
+                label="Credential"
+                value={credentialReadinessLabel[chanceStatus?.credentialReadiness ?? credentialReadiness].text}
+                danger={["invalid_key", "revoked_key", "order_permission_missing", "missing"].includes(chanceStatus?.credentialReadiness ?? credentialReadiness)}
+              />
               <StatusCell
                 label="매수 잔고"
                 value={chanceStatus ? formatBalance(chanceStatus.bidBalance, chanceStatus.bidCurrency) : "확인 필요"}

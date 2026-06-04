@@ -50,8 +50,18 @@ export type AuditCategory =
 export interface ApiStatus {
   connected: boolean;
   hasCredentials: boolean;
+  credentialReadiness: CredentialReadinessStatus;
   error?: string;
 }
+
+export type CredentialReadinessStatus =
+  | "missing"
+  | "stored_unchecked"
+  | "connected"
+  | "invalid_key"
+  | "revoked_key"
+  | "order_permission_missing"
+  | "network_error";
 
 export interface LiveOrderChanceStatus {
   allowed: boolean;
@@ -64,6 +74,7 @@ export interface LiveOrderChanceStatus {
   minimumAskTotalKrw?: number | null;
   marketBuySupported: boolean;
   marketSellSupported: boolean;
+  credentialReadiness: CredentialReadinessStatus;
   blockReasons: LiveOrderGateBlockReason[];
   reason: string;
   checkedAt: string;
@@ -187,6 +198,8 @@ export type LiveOrderGateBlockReason =
   | "legacy_schedule_not_migrated"
   | "settings_unavailable"
   | "audit_data_unavailable"
+  | "invalid_api_key"
+  | "revoked_api_key"
   | "insufficient_balance"
   | "minimum_order_amount_not_met"
   | "market_order_unavailable"
@@ -260,6 +273,30 @@ export interface PaperExecutionResult {
   duplicate: boolean;
   log?: PurchaseLog | null;
   message: string;
+}
+
+export type ThreadAutoLoopMode = "paper" | "live";
+
+export type ThreadAutoLoopAction =
+  | "paper_tick"
+  | "live_market_buy_submitted"
+  | "live_gate_blocked"
+  | "duplicate_tick"
+  | "retry_limited"
+  | "hold"
+  | "sell_skipped"
+  | "skipped";
+
+export interface ThreadAutoLoopResult {
+  threadId: string;
+  mode: ThreadAutoLoopMode;
+  action: ThreadAutoLoopAction;
+  message: string;
+  idempotencyKey?: string | null;
+  retryCount: number;
+  paperResult?: PaperExecutionResult | null;
+  liveOrderGate?: LiveOrderGateDecision | null;
+  logs: PurchaseLog[];
 }
 
 export interface InvestmentThread {

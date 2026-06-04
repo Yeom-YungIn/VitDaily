@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { InvestmentThread, LiveMarketSellRequest, PaperExecutionResult, StrategyProfile, SupportedMarket, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
+import type { InvestmentThread, LiveMarketSellRequest, PaperExecutionResult, StrategyProfile, SupportedMarket, ThreadAutoLoopResult, ThreadStatus, ThreadValidationResult, ValidationStatus } from "../types";
 
 const markets: SupportedMarket[] = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
 const fallbackLiveConfirmationPhrase = "실거래 위험을 이해하고 Live 주문을 활성화합니다";
@@ -21,7 +21,10 @@ export default function Threads() {
   const [paperRunningThreadId, setPaperRunningThreadId] = useState<string | null>(null);
   const [liveBuyRunningThreadId, setLiveBuyRunningThreadId] = useState<string | null>(null);
   const [liveSellRunningThreadId, setLiveSellRunningThreadId] = useState<string | null>(null);
+  const [autoLoopRunningThreadId, setAutoLoopRunningThreadId] = useState<string | null>(null);
+  const [allAutoLoopRunning, setAllAutoLoopRunning] = useState(false);
   const [paperResult, setPaperResult] = useState<PaperExecutionResult | null>(null);
+  const [autoLoopResult, setAutoLoopResult] = useState<ThreadAutoLoopResult | null>(null);
   const [liveConfirmationPhrase, setLiveConfirmationPhrase] = useState(fallbackLiveConfirmationPhrase);
 
   useEffect(() => {
@@ -95,6 +98,41 @@ export default function Threads() {
       setError(String(err));
     } finally {
       setPaperRunningThreadId(null);
+    }
+  }
+
+  async function handleRunAutoLoopTick(thread: InvestmentThread) {
+    setError("");
+    setAutoLoopRunningThreadId(thread.id);
+    try {
+      const result = await invoke<ThreadAutoLoopResult>("run_thread_auto_loop_tick", { threadId: thread.id });
+      setAutoLoopResult(result);
+      if (result.paperResult) {
+        setPaperResult(result.paperResult);
+      }
+      await loadThreads();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setAutoLoopRunningThreadId(null);
+    }
+  }
+
+  async function handleRunAllAutoLoopTicks() {
+    setError("");
+    setAllAutoLoopRunning(true);
+    try {
+      const results = await invoke<ThreadAutoLoopResult[]>("run_all_thread_auto_loop_ticks");
+      const selectedResult = results.find((result) => result.threadId === selectedId) ?? results[0] ?? null;
+      setAutoLoopResult(selectedResult);
+      if (selectedResult?.paperResult) {
+        setPaperResult(selectedResult.paperResult);
+      }
+      await loadThreads();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setAllAutoLoopRunning(false);
     }
   }
 
@@ -172,6 +210,16 @@ export default function Threads() {
     }
   }
 
+  async function handleComplete(thread: InvestmentThread) {
+    setError("");
+    try {
+      const updated = await invoke<InvestmentThread>("complete_thread", { threadId: thread.id });
+      setThreads((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   const selected = useMemo(
     () => threads.find((thread) => thread.id === selectedId) ?? null,
     [threads, selectedId],
@@ -190,6 +238,13 @@ export default function Threads() {
             className="rounded bg-orange-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-orange-400"
           >
             + 생성
+          </button>
+          <button
+            onClick={handleRunAllAutoLoopTicks}
+            disabled={allAutoLoopRunning}
+            className="rounded bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          >
+            {allAutoLoopRunning ? "Loop..." : "전체 tick"}
           </button>
         </div>
 
@@ -241,14 +296,18 @@ export default function Threads() {
         isRunningPaper={paperRunningThreadId === selected?.id}
         isRunningLiveBuy={liveBuyRunningThreadId === selected?.id}
         isRunningLiveSell={liveSellRunningThreadId === selected?.id}
+        isRunningAutoLoop={autoLoopRunningThreadId === selected?.id}
+        autoLoopResult={autoLoopResult?.threadId === selected?.id ? autoLoopResult : null}
         onRunBacktest={handleRunBacktest}
         onRunPaper={handleRunPaper}
+        onRunAutoLoopTick={handleRunAutoLoopTick}
         onActivate={handleActivate}
         onStartLive={handleStartLive}
         onSubmitLiveMarketBuy={handleSubmitLiveMarketBuy}
         onSubmitLiveMarketSell={handleSubmitLiveMarketSell}
         onPause={handlePause}
         onStop={handleStop}
+        onComplete={handleComplete}
         onEdit={(thread) => { setEditTarget(thread); setShowForm(true); }}
         onDelete={handleDelete}
         liveConfirmationPhrase={liveConfirmationPhrase}
@@ -371,14 +430,18 @@ function ThreadDetail({
   isRunningPaper,
   isRunningLiveBuy,
   isRunningLiveSell,
+  isRunningAutoLoop,
+  autoLoopResult,
   onRunBacktest,
   onRunPaper,
+  onRunAutoLoopTick,
   onActivate,
   onStartLive,
   onSubmitLiveMarketBuy,
   onSubmitLiveMarketSell,
   onPause,
   onStop,
+  onComplete,
   onEdit,
   onDelete,
   liveConfirmationPhrase,
@@ -390,14 +453,18 @@ function ThreadDetail({
   isRunningPaper: boolean;
   isRunningLiveBuy: boolean;
   isRunningLiveSell: boolean;
+  isRunningAutoLoop: boolean;
+  autoLoopResult: ThreadAutoLoopResult | null;
   onRunBacktest: (thread: InvestmentThread) => void;
   onRunPaper: (thread: InvestmentThread) => void;
+  onRunAutoLoopTick: (thread: InvestmentThread) => void;
   onActivate: (thread: InvestmentThread, confirmationText: string) => void;
   onStartLive: (thread: InvestmentThread) => void;
   onSubmitLiveMarketBuy: (thread: InvestmentThread) => void;
   onSubmitLiveMarketSell: (thread: InvestmentThread, volume: string) => void;
   onPause: (thread: InvestmentThread) => void;
   onStop: (thread: InvestmentThread) => void;
+  onComplete: (thread: InvestmentThread) => void;
   onEdit: (thread: InvestmentThread) => void;
   onDelete: (id: string) => void;
   liveConfirmationPhrase: string;
@@ -426,8 +493,11 @@ function ThreadDetail({
   const canStartLive = thread.status === "armed" && thread.validationStatus === "pass" && finalConfirmationSaved;
   const canSubmitLiveBuy = thread.status === "live" && finalConfirmationSaved;
   const canSubmitLiveSell = canSubmitLiveBuy && Number(sellVolume) > 0;
-  const canPause = thread.status === "armed" || thread.status === "live";
+  const canPause = thread.status === "paper" || thread.status === "armed" || thread.status === "live";
   const canStop = !["stopped", "completed"].includes(thread.status);
+  const canComplete = ["paper", "paused", "armed", "live"].includes(thread.status);
+  const canRunPaper = thread.status === "draft" || thread.status === "paper";
+  const canRunAutoLoop = thread.status === "paper" || thread.status === "live";
   const readinessBlockers = liveReadinessBlockers(thread, validationResult, finalConfirmationSaved);
 
   return (
@@ -470,12 +540,38 @@ function ThreadDetail({
           <h3 className="text-sm font-semibold text-slate-200">Paper 실행</h3>
           <button
             onClick={() => onRunPaper(thread)}
-            disabled={isRunningPaper || thread.status === "live" || thread.status === "armed"}
+            disabled={isRunningPaper || !canRunPaper}
             className="mt-3 w-full rounded bg-cyan-500 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
             {isRunningPaper ? "Paper 실행 중..." : "전략 신호 Paper 실행"}
           </button>
           <p className="mt-2 text-xs text-slate-500">API 키 없이 공개 캔들을 평가하고 모의 주문 로그만 남깁니다.</p>
+        </div>
+        <div className="rounded-lg bg-slate-900/60 p-4 lg:col-span-2">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-200">자동 실행 loop</h3>
+              <p className="mt-1 text-xs text-slate-500">Paper 상태는 credential 없이 모의 tick만 실행하고, Live 상태는 모든 Gate 통과 후에만 주문을 제출합니다.</p>
+            </div>
+            <button
+              onClick={() => onRunAutoLoopTick(thread)}
+              disabled={!canRunAutoLoop || isRunningAutoLoop}
+              className="rounded bg-cyan-600 px-4 py-2 text-xs font-semibold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+            >
+              {isRunningAutoLoop ? "Tick 실행 중..." : "선택 tick 실행"}
+            </button>
+          </div>
+          {autoLoopResult && (
+            <div className="mt-3 rounded border border-slate-700 bg-slate-950/50 px-3 py-2 text-xs">
+              <p className="text-slate-300">{autoLoopActionLabel(autoLoopResult.action)} · {autoLoopResult.message}</p>
+              <p className="mt-1 break-all text-[11px] text-slate-500">
+                mode={autoLoopResult.mode} · retry={autoLoopResult.retryCount} · key={autoLoopResult.idempotencyKey ?? "none"}
+              </p>
+              {autoLoopResult.liveOrderGate && (
+                <p className="mt-1 text-[11px] text-yellow-200">{autoLoopResult.liveOrderGate.reason}</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -560,6 +656,13 @@ function ThreadDetail({
             className="flex-1 rounded bg-slate-700 px-3 py-2 text-xs text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:text-slate-500"
           >
             긴급 중지
+          </button>
+          <button
+            onClick={() => onComplete(thread)}
+            disabled={!canComplete}
+            className="flex-1 rounded bg-slate-700 px-3 py-2 text-xs text-green-200 hover:bg-green-500/20 disabled:cursor-not-allowed disabled:text-slate-500"
+          >
+            완료
           </button>
         </div>
         <p className="mt-2 text-xs text-slate-500">최종 주문 제출은 별도 Live Order Gate와 Upbit payload preview 테스트 뒤에만 가능하며 기본값은 차단입니다.</p>
@@ -687,6 +790,20 @@ function paperActionLabel(action: PaperExecutionResult["signal"]["action"]): str
   if (action === "buy") return "모의 매수";
   if (action === "sell") return "모의 청산";
   return "대기";
+}
+
+function autoLoopActionLabel(action: ThreadAutoLoopResult["action"]): string {
+  const labels: Record<ThreadAutoLoopResult["action"], string> = {
+    paper_tick: "Paper tick",
+    live_market_buy_submitted: "Live 매수 제출",
+    live_gate_blocked: "Gate 차단",
+    duplicate_tick: "중복 tick",
+    retry_limited: "Retry 제한",
+    hold: "대기",
+    sell_skipped: "자동 매도 차단",
+    skipped: "건너뜀",
+  };
+  return labels[action];
 }
 
 function formatPercent(value: number): string {
