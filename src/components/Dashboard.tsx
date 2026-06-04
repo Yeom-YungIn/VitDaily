@@ -72,7 +72,8 @@ export default function Dashboard() {
     return logs
       .filter(
         (log) =>
-          log.status === "success" &&
+          ["success", "filled"].includes(log.status) &&
+          (log.action ?? "market_buy") === "market_buy" &&
           new Date(log.executedAt).toLocaleDateString("ko-KR") === today,
       )
       .reduce((total, log) => total + log.amountKrw, 0);
@@ -168,7 +169,7 @@ export default function Dashboard() {
                   </li>
                 ))}
                 {logs.slice(0, 3).map((log) => {
-                  const statusLabel = log.status === "success" ? "성공" : log.status === "blocked" ? "차단" : "실패";
+                  const statusLabel = log.status === "success" || log.status === "filled" ? "체결" : log.status === "submitted" ? "제출" : log.status === "blocked" ? "차단" : "실패";
                   return (
                     <li key={log.id} className="rounded-lg bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
                       스케줄 주문 {statusLabel} · {log.amountKrw.toLocaleString()}원

@@ -46,15 +46,9 @@ export default function PurchaseLogs({ logs = [], title = "최근 매수 내역"
                 )}
               </div>
               <span
-                className={`text-xs px-2 py-0.5 rounded ${
-                  log.status === "success"
-                    ? "bg-green-500/10 text-green-400"
-                    : log.status === "blocked"
-                      ? "bg-yellow-500/10 text-yellow-300"
-                      : "bg-red-500/10 text-red-400"
-                }`}
+                className={`text-xs px-2 py-0.5 rounded ${statusColor(log.status)}`}
               >
-                {log.status === "success" ? "성공" : log.status === "blocked" ? "차단" : "실패"}
+                {statusLabel(log.status)}
               </span>
             </li>
           ))}
@@ -66,13 +60,15 @@ export default function PurchaseLogs({ logs = [], title = "최근 매수 내역"
 
 function fallbackTitle(log: PurchaseLog): string {
   if (log.status === "blocked") return "주문 차단";
-  if (log.status === "failure") return "주문 실패";
-  return "시장가 매수";
+  if (log.status === "failure" || log.status === "failed") return "주문 실패";
+  if (log.status === "submitted") return "주문 제출";
+  if (log.status === "filled") return "주문 체결";
+  return log.action === "market_sell" ? "시장가 매도" : "시장가 매수";
 }
 
 function fallbackCategory(log: PurchaseLog): AuditCategory {
   if (log.status === "blocked") return "blocked_order";
-  if (log.status === "failure") return "api_failure";
+  if (log.status === "failure" || log.status === "failed") return "api_failure";
   return "trade";
 }
 
@@ -81,16 +77,36 @@ function formatPurchaseDetail(log: PurchaseLog): string {
   const btcText = `${volume.toFixed(8)} BTC`;
   const actionLabel = actionText(log.action);
 
-  if (log.status !== "success" || volume <= 0) {
+  if (!["success", "filled"].includes(log.status) || volume <= 0) {
     return `${actionLabel} · ${log.amountKrw.toLocaleString()}원 · ${btcText}`;
   }
 
   const unitPrice = Math.round(log.amountKrw / volume);
+  if (log.action === "market_sell") {
+    return `${actionLabel} · 1 BTC = ${unitPrice.toLocaleString()}원일 때, ${btcText} 매도`;
+  }
   return `${actionLabel} · 1 BTC = ${unitPrice.toLocaleString()}원일 때, ${log.amountKrw.toLocaleString()}원치 매수 · ${btcText}`;
 }
 
+function statusLabel(status: PurchaseLog["status"]): string {
+  if (status === "submitted") return "제출";
+  if (status === "filled") return "체결";
+  if (status === "success") return "성공";
+  if (status === "blocked") return "차단";
+  return "실패";
+}
+
+function statusColor(status: PurchaseLog["status"]): string {
+  if (status === "filled" || status === "success") return "bg-green-500/10 text-green-400";
+  if (status === "submitted") return "bg-blue-500/10 text-blue-300";
+  if (status === "blocked") return "bg-yellow-500/10 text-yellow-300";
+  return "bg-red-500/10 text-red-400";
+}
+
 function actionText(action?: PurchaseLog["action"]): string {
-  return action === "safety_check" ? "안전 게이트 검사" : "시장가 매수";
+  if (action === "safety_check") return "안전 게이트 검사";
+  if (action === "market_sell") return "시장가 매도";
+  return "시장가 매수";
 }
 
 function ModeBadge({ mode }: { mode: ExecutionMode }) {

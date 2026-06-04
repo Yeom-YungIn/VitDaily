@@ -39,13 +39,13 @@ export default function Logs() {
 
   const filteredLogs = logs.filter((log) => {
     const statusMatches = logStatusFilter === "all" || log.status === logStatusFilter;
-    const category = log.auditCategory ?? (log.status === "blocked" ? "blocked_order" : log.status === "failure" ? "api_failure" : "trade");
+    const category = log.auditCategory ?? (log.status === "blocked" ? "blocked_order" : ["failure", "failed"].includes(log.status) ? "api_failure" : "trade");
     const categoryMatches = categoryFilter === "all" || category === categoryFilter;
     return statusMatches && categoryMatches;
   });
   const filteredEvents = eventFilter === "all" ? events : events.filter((event) => event.eventType === eventFilter);
   const blockedOrders = logs.filter((log) => log.status === "blocked").length;
-  const failedOrders = logs.filter((log) => log.status === "failure").length;
+  const failedOrders = logs.filter((log) => log.status === "failure" || log.status === "failed").length;
   const safetyGateEvents = events.filter((event) => (event.category ?? "safety_gate") === "safety_gate").length;
   const validationEvents = events.filter((event) => (event.category ?? "") === "validation" || event.message.includes("백테스트") || event.eventType === "info").length;
 
@@ -68,7 +68,10 @@ export default function Logs() {
           <div className="flex flex-wrap gap-2">
             <select value={logStatusFilter} onChange={(event) => setLogStatusFilter(event.target.value as LogStatusFilter)} className="input py-1 text-xs">
               <option value="all">전체 상태</option>
+              <option value="submitted">제출</option>
+              <option value="filled">체결</option>
               <option value="success">성공</option>
+              <option value="failed">실패</option>
               <option value="blocked">차단</option>
               <option value="failure">실패</option>
             </select>

@@ -981,7 +981,7 @@ fn build_portfolio_analytics(
     let total_budget_krw = threads.iter().map(|thread| thread.initial_budget_krw).sum();
     let invested_krw = logs
         .iter()
-        .filter(|log| matches!(log.status, PurchaseStatus::Success))
+        .filter(|log| is_successful_buy(log))
         .map(|log| log.amount_krw)
         .sum();
     let current_value_krw = time_series
@@ -996,10 +996,7 @@ fn build_portfolio_analytics(
         .iter()
         .map(|point| point.drawdown_percent)
         .fold(0.0, f64::max);
-    let successful_buys = logs
-        .iter()
-        .filter(|log| matches!(log.status, PurchaseStatus::Success))
-        .count() as u32;
+    let successful_buys = logs.iter().filter(|log| is_successful_buy(log)).count() as u32;
     let blocked_orders = logs
         .iter()
         .filter(|log| matches!(log.status, PurchaseStatus::Blocked))
@@ -1030,25 +1027,35 @@ fn build_local_portfolio_time_series(logs: &[PurchaseLog]) -> Vec<PortfolioTimeP
         .collect();
     successful_logs.sort_by(|a, b| a.executed_at.cmp(&b.executed_at));
 
-    let mut daily: BTreeMap<String, (u64, f64, f64)> = BTreeMap::new();
+    let mut daily: BTreeMap<String, (u64, f64, u64, f64)> = BTreeMap::new();
     for log in successful_logs {
         let date = log.executed_at.date_naive().to_string();
         let unit_price = log.amount_krw as f64 / log.volume_btc;
-        let entry = daily.entry(date).or_insert((0, 0.0, unit_price));
-        entry.0 += log.amount_krw;
-        entry.1 += log.volume_btc;
-        entry.2 = unit_price;
+        let entry = daily.entry(date).or_insert((0, 0.0, 0, unit_price));
+        match log.action {
+            PurchaseLogAction::MarketSell => {
+                entry.1 -= log.volume_btc;
+                entry.2 += log.amount_krw;
+            }
+            PurchaseLogAction::MarketBuy | PurchaseLogAction::SafetyCheck => {
+                entry.0 += log.amount_krw;
+                entry.1 += log.volume_btc;
+            }
+        }
+        entry.3 = unit_price;
     }
 
     let mut invested = 0_u64;
     let mut btc_total = 0.0;
+    let mut realized_cash = 0_u64;
     let mut peak_value = 0_u64;
     let mut points = Vec::with_capacity(daily.len());
 
-    for (date, (daily_invested, daily_btc, unit_price)) in daily {
+    for (date, (daily_invested, daily_btc, daily_cash, unit_price)) in daily {
         invested += daily_invested;
         btc_total += daily_btc;
-        let estimated_value = (btc_total * unit_price).round().max(0.0) as u64;
+        realized_cash += daily_cash;
+        let estimated_value = ((btc_total * unit_price).round().max(0.0) as u64) + realized_cash;
         peak_value = peak_value.max(estimated_value);
         points.push(portfolio_point(
             date,
@@ -1060,6 +1067,11 @@ fn build_local_portfolio_time_series(logs: &[PurchaseLog]) -> Vec<PortfolioTimeP
     }
 
     points
+}
+
+fn is_successful_buy(log: &PurchaseLog) -> bool {
+    matches!(log.status, PurchaseStatus::Success | PurchaseStatus::Filled)
+        && matches!(log.action, PurchaseLogAction::MarketBuy)
 }
 
 fn build_simulated_portfolio_time_series(
@@ -1451,6 +1463,22 @@ fn notify_purchase_result<R: Runtime>(app: &AppHandle<R>, log: &PurchaseLog) {
     }
 
     let (title, body) = match log.status {
+        PurchaseStatus::Submitted => (
+            "VitDaily 주문 제출".to_string(),
+            format!("{}원 매수 주문 제출 · 체결 대기", log.amount_krw),
+        ),
+        PurchaseStatus::Filled => (
+            "VitDaily 매수 체결".to_string(),
+            format!("{}원 매수 체결 · {:.8} BTC", log.amount_krw, log.volume_btc),
+        ),
+        PurchaseStatus::Failed => (
+            "VitDaily 주문 실패".to_string(),
+            format!(
+                "{}원 주문 실패 · {}",
+                log.amount_krw,
+                log.error_message.as_deref().unwrap_or("알 수 없는 오류")
+            ),
+        ),
         PurchaseStatus::Success => (
             "VitDaily 매수 성공".to_string(),
             format!(
@@ -1561,7 +1589,7 @@ fn build_paper_execution_result(
             "전략 신호가 모의 매수를 생성했고 실제 Upbit 주문은 제출하지 않았습니다"
         }
         PaperSignalAction::Sell => {
-            "전략 신호가 모의 청산을 제안했지만 현재 foundation 범위에서는 주문 로그를 생성하지 않습니다"
+            "전략 신호가 모의 청산을 제안했지만 현재 Live readiness 범위에서는 매도 주문 로그를 생성하지 않습니다"
         }
         PaperSignalAction::Hold => "전략 신호가 대기 상태라 모의 주문을 생성하지 않았습니다",
     }
@@ -2028,9 +2056,12 @@ fn live_daily_trade_count(
     let requested_day = requested_at.with_timezone(&Local).date_naive();
     logs.iter()
         .filter(|log| {
-            log.status == PurchaseStatus::Success
+            matches!(log.status, PurchaseStatus::Success | PurchaseStatus::Filled)
                 && log.mode == ExecutionMode::Live
-                && log.action == PurchaseLogAction::MarketBuy
+                && matches!(
+                    log.action,
+                    PurchaseLogAction::MarketBuy | PurchaseLogAction::MarketSell
+                )
                 && log.source == purchase_log_source_for_gate(source)
                 && log.executed_at.with_timezone(&Local).date_naive() == requested_day
         })
@@ -3481,6 +3512,23 @@ mod tests {
             analytics.summary.latest_point_source,
             Some(PortfolioPointSource::Local)
         );
+    }
+
+    #[test]
+    fn sell_logs_do_not_inflate_invested_capital_or_buy_count() {
+        let schedule_id = uuid::Uuid::new_v4();
+        let mut sell = sample_purchase_log(schedule_id, "2026-01-02T00:00:00Z", 5_000, 0.5);
+        sell.action = PurchaseLogAction::MarketSell;
+        let logs = vec![
+            sample_purchase_log(schedule_id, "2026-01-01T00:00:00Z", 10_000, 1.0),
+            sell,
+        ];
+
+        let analytics = build_portfolio_analytics(&logs, &[], &[], &[]);
+
+        assert_eq!(analytics.summary.invested_krw, 10_000);
+        assert_eq!(analytics.summary.successful_buys, 1);
+        assert_eq!(analytics.summary.current_value_krw, 10_000);
     }
 
     #[test]
