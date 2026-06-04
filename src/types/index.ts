@@ -19,7 +19,7 @@ export interface PurchaseLog {
   executedAt: string;
   amountKrw: number;
   volumeBtc: number;
-  status: "success" | "failure" | "blocked";
+  status: "submitted" | "filled" | "failed" | "success" | "failure" | "blocked";
   errorMessage?: string;
   source?: PurchaseLogSource;
   mode?: ExecutionMode;
@@ -36,7 +36,7 @@ export type PurchaseLogSource = "legacy_schedule" | "investment_thread" | "syste
 
 export type ExecutionMode = "live" | "paper" | "system";
 
-export type PurchaseLogAction = "market_buy" | "safety_check";
+export type PurchaseLogAction = "market_buy" | "market_sell" | "safety_check";
 
 export type AuditCategory =
   | "trade"
@@ -51,6 +51,36 @@ export interface ApiStatus {
   connected: boolean;
   hasCredentials: boolean;
   error?: string;
+}
+
+export interface LiveOrderChanceStatus {
+  allowed: boolean;
+  market: SupportedMarket;
+  bidCurrency: string;
+  bidBalance: number;
+  askCurrency: string;
+  askBalance: number;
+  minimumBidTotalKrw?: number | null;
+  minimumAskTotalKrw?: number | null;
+  marketBuySupported: boolean;
+  marketSellSupported: boolean;
+  blockReasons: LiveOrderGateBlockReason[];
+  reason: string;
+  checkedAt: string;
+}
+
+export type LegacyScheduleLivePolicy = "blocked_use_investment_thread";
+
+export interface LegacyScheduleLivePolicyStatus {
+  scheduleId: string;
+  enabled: boolean;
+  time: string;
+  amountKrw: number;
+  policy: LegacyScheduleLivePolicy;
+  liveOrderAllowed: boolean;
+  liveOrderGate: LiveOrderGateDecision;
+  title: string;
+  description: string;
 }
 
 export interface PortfolioSnapshot {
@@ -120,6 +150,7 @@ export interface AppSettings {
   notificationsEnabled: boolean;
   notificationPermissionRequested: boolean;
   globalLiveLocked: boolean;
+  strategyLogicApproved: boolean;
 }
 
 
@@ -144,6 +175,8 @@ export type LiveOrderGateSource = "legacy_schedule" | "investment_thread";
 
 export type LiveOrderGateBlockReason =
   | "global_live_locked"
+  | "credentials_missing"
+  | "strategy_logic_not_approved"
   | "final_confirmation_missing"
   | "live_mode_not_enabled"
   | "daily_trade_cap_exceeded"
@@ -153,13 +186,19 @@ export type LiveOrderGateBlockReason =
   | "validation_not_passed"
   | "legacy_schedule_not_migrated"
   | "settings_unavailable"
-  | "audit_data_unavailable";
+  | "audit_data_unavailable"
+  | "insufficient_balance"
+  | "minimum_order_amount_not_met"
+  | "market_order_unavailable"
+  | "order_permission_denied"
+  | "order_chance_unavailable";
 
 export interface LiveOrderGateCheck {
   source: LiveOrderGateSource;
   threadId?: string | null;
   relatedScheduleId?: string | null;
   market: SupportedMarket;
+  intent?: LiveOrderIntent | null;
   amountKrw: number;
   finalConfirmationStatus: LiveOrderFinalConfirmationStatus;
   dailyTradeCount: number;
@@ -174,6 +213,30 @@ export interface LiveOrderGateDecision {
   check: LiveOrderGateCheck;
   blockReasons: LiveOrderGateBlockReason[];
   reason: string;
+}
+
+export interface LiveActivationRequest {
+  threadId: string;
+  confirmationText: string;
+}
+
+export interface LiveMarketSellRequest {
+  threadId: string;
+  volume: string;
+  estimatedAmountKrw?: number | null;
+  policyReason?: string | null;
+}
+
+export type LiveOrderIntent = "market_buy" | "market_sell";
+
+export interface UpbitOrderPayloadPreview {
+  market: SupportedMarket;
+  side: string;
+  ordType: string;
+  price?: string | null;
+  volume?: string | null;
+  identifier: string;
+  queryString: string;
 }
 
 export type PaperSignalAction = "buy" | "sell" | "hold";
@@ -211,6 +274,8 @@ export interface InvestmentThread {
   status: ThreadStatus;
   validationStatus: ValidationStatus;
   finalConfirmationStatus?: LiveOrderFinalConfirmationStatus;
+  finalConfirmationText?: string | null;
+  finalConfirmedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

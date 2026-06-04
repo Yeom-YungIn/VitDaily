@@ -75,6 +75,9 @@ pub struct PurchaseLog {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PurchaseStatus {
+    Submitted,
+    Filled,
+    Failed,
     Success,
     Failure,
     Blocked,
@@ -108,6 +111,7 @@ fn default_purchase_log_mode() -> ExecutionMode {
 #[serde(rename_all = "snake_case")]
 pub enum PurchaseLogAction {
     MarketBuy,
+    MarketSell,
     SafetyCheck,
 }
 
@@ -139,6 +143,24 @@ pub struct ApiStatus {
     pub connected: bool,
     pub has_credentials: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveOrderChanceStatus {
+    pub allowed: bool,
+    pub market: SupportedMarket,
+    pub bid_currency: String,
+    pub bid_balance: f64,
+    pub ask_currency: String,
+    pub ask_balance: f64,
+    pub minimum_bid_total_krw: Option<u64>,
+    pub minimum_ask_total_krw: Option<u64>,
+    pub market_buy_supported: bool,
+    pub market_sell_supported: bool,
+    pub block_reasons: Vec<LiveOrderGateBlockReason>,
+    pub reason: String,
+    pub checked_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -223,6 +245,8 @@ pub struct AppSettings {
     pub notification_permission_requested: bool,
     #[serde(default = "default_global_live_locked")]
     pub global_live_locked: bool,
+    #[serde(default)]
+    pub strategy_logic_approved: bool,
 }
 
 fn default_global_live_locked() -> bool {
@@ -235,6 +259,7 @@ impl Default for AppSettings {
             notifications_enabled: false,
             notification_permission_requested: false,
             global_live_locked: true,
+            strategy_logic_approved: false,
         }
     }
 }
@@ -309,6 +334,8 @@ pub enum LiveOrderGateSource {
 #[serde(rename_all = "snake_case")]
 pub enum LiveOrderGateBlockReason {
     GlobalLiveLocked,
+    CredentialsMissing,
+    StrategyLogicNotApproved,
     FinalConfirmationMissing,
     LiveModeNotEnabled,
     DailyTradeCapExceeded,
@@ -319,6 +346,17 @@ pub enum LiveOrderGateBlockReason {
     LegacyScheduleNotMigrated,
     SettingsUnavailable,
     AuditDataUnavailable,
+    InsufficientBalance,
+    MinimumOrderAmountNotMet,
+    MarketOrderUnavailable,
+    OrderPermissionDenied,
+    OrderChanceUnavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyScheduleLivePolicy {
+    BlockedUseInvestmentThread,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +366,7 @@ pub struct LiveOrderGateCheck {
     pub thread_id: Option<Uuid>,
     pub related_schedule_id: Option<Uuid>,
     pub market: SupportedMarket,
+    pub intent: Option<LiveOrderIntent>,
     pub amount_krw: u64,
     pub final_confirmation_status: LiveOrderFinalConfirmationStatus,
     pub daily_trade_count: u32,
@@ -344,6 +383,55 @@ pub struct LiveOrderGateDecision {
     pub check: LiveOrderGateCheck,
     pub block_reasons: Vec<LiveOrderGateBlockReason>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyScheduleLivePolicyStatus {
+    pub schedule_id: Uuid,
+    pub enabled: bool,
+    pub time: String,
+    pub amount_krw: u64,
+    pub policy: LegacyScheduleLivePolicy,
+    pub live_order_allowed: bool,
+    pub live_order_gate: LiveOrderGateDecision,
+    pub title: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveActivationRequest {
+    pub thread_id: Uuid,
+    pub confirmation_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveMarketSellRequest {
+    pub thread_id: Uuid,
+    pub volume: String,
+    pub estimated_amount_krw: Option<u64>,
+    pub policy_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveOrderIntent {
+    MarketBuy,
+    MarketSell,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpbitOrderPayloadPreview {
+    pub market: SupportedMarket,
+    pub side: String,
+    pub ord_type: String,
+    pub price: Option<String>,
+    pub volume: Option<String>,
+    pub identifier: String,
+    pub query_string: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -394,6 +482,10 @@ pub struct InvestmentThread {
     pub validation_status: ValidationStatus,
     #[serde(default)]
     pub final_confirmation_status: LiveOrderFinalConfirmationStatus,
+    #[serde(default)]
+    pub final_confirmation_text: Option<String>,
+    #[serde(default)]
+    pub final_confirmed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

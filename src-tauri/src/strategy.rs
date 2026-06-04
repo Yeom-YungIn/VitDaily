@@ -1167,6 +1167,8 @@ mod tests {
             status: crate::types::ThreadStatus::Draft,
             validation_status: ValidationStatus::Missing,
             final_confirmation_status: crate::types::LiveOrderFinalConfirmationStatus::Missing,
+            final_confirmation_text: None,
+            final_confirmed_at: None,
             created_at: now,
             updated_at: now,
         }
