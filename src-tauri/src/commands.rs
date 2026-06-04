@@ -217,6 +217,16 @@ pub async fn toggle_schedule(id: String) -> Result<Vec<Schedule>, String> {
     Ok(schedules)
 }
 
+#[command]
+pub async fn get_legacy_schedule_live_policy_statuses(
+) -> Result<Vec<LegacyScheduleLivePolicyStatus>, String> {
+    let schedules = load_schedules().map_err(|e| e.to_string())?;
+    Ok(schedules
+        .iter()
+        .map(build_legacy_schedule_live_policy_status)
+        .collect())
+}
+
 // --- Investment Threads ---
 
 #[command]
@@ -1546,8 +1556,23 @@ fn notify_purchase_result<R: Runtime>(app: &AppHandle<R>, log: &PurchaseLog) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
-fn reconcile_legacy_schedule_order(schedule: &Schedule) -> PurchaseLog {
+fn build_legacy_schedule_live_policy_status(schedule: &Schedule) -> LegacyScheduleLivePolicyStatus {
     let gate = evaluate_live_order_gate(LiveOrderGateInput::legacy_schedule(schedule));
+    LegacyScheduleLivePolicyStatus {
+        schedule_id: schedule.id,
+        enabled: schedule.enabled,
+        time: schedule.time.clone(),
+        amount_krw: schedule.amount,
+        policy: LegacyScheduleLivePolicy::BlockedUseInvestmentThread,
+        live_order_allowed: false,
+        live_order_gate: gate,
+        title: "레거시 DCA 스케줄 실거래 차단".to_string(),
+        description: "기존 스케줄러는 공유 Live Order Gate에서 항상 차단되며, 실거래는 백테스트/최종확인/Upbit 주문가능성 검사를 통과한 투자 스레드 경로만 사용할 수 있습니다.".to_string(),
+    }
+}
+
+fn reconcile_legacy_schedule_order(schedule: &Schedule) -> PurchaseLog {
+    let gate = build_legacy_schedule_live_policy_status(schedule).live_order_gate;
     let safety_event_id = record_live_order_gate_block_event(&gate).ok();
 
     build_live_order_blocked_log(&gate, safety_event_id)
@@ -3730,6 +3755,51 @@ mod tests {
         assert_eq!(log.volume_btc, 0.0);
         assert!(log.reason.unwrap_or_default().contains("마이그레이션"));
         assert_eq!(log.safety_event_id, Some(safety_event_id));
+    }
+
+    #[test]
+    fn legacy_schedule_live_policy_status_is_explicitly_blocked() {
+        let now = Utc::now();
+        let schedule = Schedule {
+            id: uuid::Uuid::new_v4(),
+            time: "09:00".to_string(),
+            amount: 10_000,
+            enabled: true,
+            pending_change: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let status = build_legacy_schedule_live_policy_status(&schedule);
+
+        assert_eq!(status.schedule_id, schedule.id);
+        assert_eq!(
+            status.policy,
+            LegacyScheduleLivePolicy::BlockedUseInvestmentThread
+        );
+        assert!(!status.live_order_allowed);
+        assert!(!status.live_order_gate.allowed);
+        assert!(status
+            .live_order_gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::LegacyScheduleNotMigrated));
+        assert!(status.description.contains("투자 스레드"));
+    }
+
+    #[test]
+    fn scheduler_path_cannot_submit_direct_upbit_orders() {
+        let source = include_str!("commands.rs");
+        let scheduler_section = source
+            .split("async fn execute_due_schedules")
+            .nth(1)
+            .and_then(|section| section.split("fn notify_purchase_result").next())
+            .expect("scheduler section");
+
+        assert!(scheduler_section.contains("reconcile_legacy_schedule_order(schedule)"));
+        assert!(!scheduler_section.contains("execute_upbit_order_request"));
+        assert!(!scheduler_section.contains("submit_thread_live_market_buy"));
+        assert!(!scheduler_section.contains("submit_thread_live_market_sell"));
+        assert!(!scheduler_section.contains(".post(\"https://api.upbit.com/v1/orders\")"));
     }
 
     #[test]
