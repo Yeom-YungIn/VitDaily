@@ -94,6 +94,45 @@ pub async fn test_api_connection() -> Result<ApiStatus, String> {
 }
 
 #[command]
+pub async fn get_live_order_chance_status() -> Result<LiveOrderChanceStatus, String> {
+    let market = SupportedMarket::KrwBtc;
+    let checked_at = Utc::now();
+    let Ok((access_key, secret_key)) = get_credentials() else {
+        return Ok(build_live_order_chance_status(
+            &market,
+            None,
+            vec![LiveOrderGateBlockReason::CredentialsMissing],
+            None,
+            checked_at,
+        ));
+    };
+
+    let executor = UpbitLiveOrderExecutor;
+    match executor
+        .order_chance(&access_key, &secret_key, &market)
+        .await
+    {
+        Ok(chance) => {
+            let block_reasons = live_order_chance_settings_block_reasons(&chance);
+            Ok(build_live_order_chance_status(
+                &market,
+                Some(&chance),
+                block_reasons,
+                None,
+                checked_at,
+            ))
+        }
+        Err(error) => Ok(build_live_order_chance_status(
+            &market,
+            None,
+            vec![live_order_chance_error_block_reason(&error)],
+            Some(error),
+            checked_at,
+        )),
+    }
+}
+
+#[command]
 pub async fn get_portfolio_snapshot() -> Result<PortfolioSnapshot, String> {
     let (access_key, secret_key) = get_credentials().map_err(|_| {
         "업비트 API 키가 저장되어 있지 않습니다. 설정에서 API 키를 먼저 저장해주세요".to_string()
@@ -1665,7 +1704,10 @@ struct LiveOrderGateInput {
     thread: Option<InvestmentThread>,
     related_schedule_id: Option<uuid::Uuid>,
     market: SupportedMarket,
+    intent: Option<LiveOrderIntent>,
     amount_krw: u64,
+    order_preview: Option<UpbitOrderPayloadPreview>,
+    order_chance: Option<Result<LiveOrderChance, String>>,
     requested_at: chrono::DateTime<Utc>,
 }
 
@@ -1676,7 +1718,10 @@ impl LiveOrderGateInput {
             thread: None,
             related_schedule_id: Some(schedule.id),
             market: SupportedMarket::KrwBtc,
+            intent: None,
             amount_krw: schedule.amount,
+            order_preview: None,
+            order_chance: None,
             requested_at: Utc::now(),
         }
     }
@@ -1841,11 +1886,21 @@ fn evaluate_live_order_gate_with_data(
 
     let mut block_reasons = Vec::new();
     match data.settings {
-        Ok(settings) if settings.global_live_locked => {
-            block_reasons.push(LiveOrderGateBlockReason::GlobalLiveLocked);
+        Ok(settings) => {
+            if settings.global_live_locked {
+                block_reasons.push(LiveOrderGateBlockReason::GlobalLiveLocked);
+            }
+            if !settings.strategy_logic_approved {
+                block_reasons.push(LiveOrderGateBlockReason::StrategyLogicNotApproved);
+            }
         }
-        Ok(_) => {}
         Err(_) => block_reasons.push(LiveOrderGateBlockReason::SettingsUnavailable),
+    }
+
+    match data.credentials_available {
+        Ok(true) => {}
+        Ok(false) => block_reasons.push(LiveOrderGateBlockReason::CredentialsMissing),
+        Err(_) => block_reasons.push(LiveOrderGateBlockReason::CredentialsMissing),
     }
 
     if !SupportedMarket::all().contains(&input.market) {
@@ -1918,6 +1973,22 @@ fn evaluate_live_order_gate_with_data(
                 }
                 Err(_) => block_reasons.push(LiveOrderGateBlockReason::AuditDataUnavailable),
             }
+        }
+    }
+
+    if input.intent.is_some() {
+        match (&input.order_preview, &input.order_chance) {
+            (Some(preview), Some(Ok(chance))) => {
+                block_reasons.extend(live_order_chance_submission_block_reasons(
+                    chance,
+                    preview,
+                    input.amount_krw,
+                ));
+            }
+            (Some(_), Some(Err(error))) => {
+                block_reasons.push(live_order_chance_error_block_reason(error));
+            }
+            _ => block_reasons.push(LiveOrderGateBlockReason::OrderChanceUnavailable),
         }
     }
 

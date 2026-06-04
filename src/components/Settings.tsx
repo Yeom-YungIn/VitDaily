@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
-import type { ApiStatus, AppSettings } from "../types";
+import type { ApiStatus, AppSettings, LiveOrderChanceStatus, LiveOrderGateBlockReason } from "../types";
 
 type ConnectionStatus = "idle" | "testing" | "ok" | "error";
 
@@ -11,9 +11,12 @@ export default function Settings() {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [globalLiveLocked, setGlobalLiveLocked] = useState(true);
+  const [strategyLogicApproved, setStrategyLogicApproved] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
   const [hasCredentials, setHasCredentials] = useState(false);
   const [message, setMessage] = useState("");
+  const [chanceStatus, setChanceStatus] = useState<LiveOrderChanceStatus | null>(null);
+  const [chanceLoading, setChanceLoading] = useState(false);
 
   useEffect(() => {
     invoke<ApiStatus>("get_api_status")
@@ -27,12 +30,29 @@ export default function Settings() {
       .then((settings) => {
         setNotificationsEnabled(settings.notificationsEnabled);
         setGlobalLiveLocked(settings.globalLiveLocked);
+        setStrategyLogicApproved(settings.strategyLogicApproved);
       })
       .catch(() => {
         setNotificationsEnabled(false);
         setGlobalLiveLocked(true);
+        setStrategyLogicApproved(false);
       });
+
+    loadLiveOrderChanceStatus();
   }, []);
+
+  async function loadLiveOrderChanceStatus() {
+    setChanceLoading(true);
+    try {
+      const status = await invoke<LiveOrderChanceStatus>("get_live_order_chance_status");
+      setChanceStatus(status);
+    } catch (error) {
+      setChanceStatus(null);
+      setMessage(String(error));
+    } finally {
+      setChanceLoading(false);
+    }
+  }
 
   async function handleTest() {
     if (!accessKey || !secretKey) return;
@@ -45,6 +65,7 @@ export default function Settings() {
       setHasCredentials(apiStatus.hasCredentials);
       setStatus(apiStatus.connected ? "ok" : "error");
       setMessage(apiStatus.error ?? "업비트 API 연결을 확인했습니다");
+      await loadLiveOrderChanceStatus();
     } catch (error) {
       setStatus("error");
       setMessage(String(error));
@@ -60,6 +81,7 @@ export default function Settings() {
       setHasCredentials(true);
       setStatus("idle");
       setMessage("API 키를 OS 키체인에 저장했습니다");
+      await loadLiveOrderChanceStatus();
     } catch (error) {
       setStatus("error");
       setMessage(String(error));
@@ -73,6 +95,7 @@ export default function Settings() {
       setSecretKey("");
       setStatus("idle");
       setHasCredentials(false);
+      setChanceStatus(null);
       setMessage("저장된 API 키를 삭제했습니다");
     } catch (error) {
       setStatus("error");
@@ -116,12 +139,50 @@ export default function Settings() {
     }
   }
 
+  async function updateLiveTradingSettings(nextLocked: boolean, nextStrategyApproved: boolean) {
+    setMessage("");
+    try {
+      const settings = await invoke<AppSettings>("set_live_trading_settings", {
+        globalLiveLocked: nextLocked,
+        strategyLogicApproved: nextStrategyApproved,
+      });
+      setGlobalLiveLocked(settings.globalLiveLocked);
+      setStrategyLogicApproved(settings.strategyLogicApproved);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
   const statusLabel: Record<ConnectionStatus, { text: string; color: string }> = {
     idle: { text: "미확인", color: "text-slate-400" },
     testing: { text: "확인 중...", color: "text-yellow-400" },
     ok: { text: "연결됨", color: "text-green-400" },
     error: { text: "연결 실패", color: "text-red-400" },
   };
+  const chanceReasonLabel: Record<LiveOrderGateBlockReason, string> = {
+    global_live_locked: "Global Live Lock",
+    credentials_missing: "API 키 없음",
+    strategy_logic_not_approved: "전략 승인 필요",
+    final_confirmation_missing: "최종 확인 필요",
+    live_mode_not_enabled: "Live 상태 아님",
+    daily_trade_cap_exceeded: "일일 한도 초과",
+    max_loss_exceeded: "손실 기준 초과",
+    supported_market_required: "지원 마켓 필요",
+    validation_missing: "검증 없음",
+    validation_not_passed: "검증 실패",
+    legacy_schedule_not_migrated: "레거시 스케줄 차단",
+    settings_unavailable: "설정 로드 실패",
+    audit_data_unavailable: "감사 데이터 실패",
+    insufficient_balance: "잔고 부족",
+    minimum_order_amount_not_met: "최소 주문금액 미달",
+    market_order_unavailable: "시장가 주문 불가",
+    order_permission_denied: "주문 권한 실패",
+    order_chance_unavailable: "주문 가능 정보 없음",
+  };
+  const formatKrw = (value?: number | null) =>
+    value == null ? "확인 필요" : `${Math.round(value).toLocaleString()}원`;
+  const formatBalance = (value: number, currency: string) =>
+    currency === "KRW" ? `${Math.floor(value).toLocaleString()} KRW` : `${value.toFixed(8)} ${currency}`;
 
   return (
     <div className="flex w-full max-w-[390px] flex-col gap-6">
@@ -219,23 +280,83 @@ export default function Settings() {
 
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-3">Live Trading</h2>
-        <div className="bg-slate-800 rounded-lg p-4">
+        <div className="bg-slate-800 rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-sm text-slate-200">Global Live Lock</p>
               <p className="mt-0.5 text-xs text-slate-400">
                 {globalLiveLocked
                   ? "Global Live Lock이 활성화되어 실거래가 잠겨 있습니다."
-                  : "잠금은 해제되어 있지만 Product Foundation 단계에서는 별도 안전 게이트가 실주문을 차단합니다."}
+                  : "잠금이 해제되어도 스레드별 검증, 최종 확인, API 키, 전략 승인이 모두 필요합니다."}
               </p>
             </div>
-            <span
-              className={`rounded px-2 py-1 text-xs ${
+            <button
+              onClick={() => updateLiveTradingSettings(!globalLiveLocked, strategyLogicApproved)}
+              className={`rounded px-3 py-1.5 text-xs ${
                 globalLiveLocked ? "bg-slate-700 text-slate-300" : "bg-red-500/10 text-red-300"
               }`}
             >
               {globalLiveLocked ? "Locked" : "Unlocked"}
-            </span>
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-slate-700 pt-4">
+            <div>
+              <p className="text-sm text-slate-200">Strategy Logic Approval</p>
+              <p className="mt-0.5 text-xs text-slate-400">백테스트/Paper 로직을 실거래 후보로 승인해야 Live Order Gate가 통과됩니다.</p>
+            </div>
+            <button
+              onClick={() => updateLiveTradingSettings(globalLiveLocked, !strategyLogicApproved)}
+              className={`rounded px-3 py-1.5 text-xs ${
+                strategyLogicApproved ? "bg-red-500/10 text-red-300" : "bg-slate-700 text-slate-300"
+              }`}
+            >
+              {strategyLogicApproved ? "Approved" : "Not Approved"}
+            </button>
+          </div>
+          <div className="border-t border-slate-700 pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm text-slate-200">Upbit 주문 가능성</p>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  /orders/chance로 잔고, 최소 주문금액, 시장가 주문 지원, 주문 권한을 확인합니다.
+                </p>
+              </div>
+              <button
+                onClick={loadLiveOrderChanceStatus}
+                disabled={chanceLoading}
+                className="rounded px-3 py-1.5 text-xs bg-slate-700 text-slate-300 disabled:opacity-40"
+              >
+                {chanceLoading ? "확인 중" : "다시 확인"}
+              </button>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <StatusCell label="상태" value={chanceStatus?.allowed ? "통과" : "차단"} danger={!chanceStatus?.allowed} />
+              <StatusCell label="마켓" value={chanceStatus?.market ?? "KRW-BTC"} />
+              <StatusCell
+                label="매수 잔고"
+                value={chanceStatus ? formatBalance(chanceStatus.bidBalance, chanceStatus.bidCurrency) : "확인 필요"}
+              />
+              <StatusCell
+                label="매도 잔고"
+                value={chanceStatus ? formatBalance(chanceStatus.askBalance, chanceStatus.askCurrency) : "확인 필요"}
+              />
+              <StatusCell label="최소 매수" value={formatKrw(chanceStatus?.minimumBidTotalKrw)} />
+              <StatusCell label="최소 매도" value={formatKrw(chanceStatus?.minimumAskTotalKrw)} />
+              <StatusCell label="시장가 매수" value={chanceStatus?.marketBuySupported ? "가능" : "차단"} danger={!chanceStatus?.marketBuySupported} />
+              <StatusCell label="시장가 매도" value={chanceStatus?.marketSellSupported ? "가능" : "차단"} danger={!chanceStatus?.marketSellSupported} />
+            </div>
+            {chanceStatus && !chanceStatus.allowed && (
+              <div className="mt-3 rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-100">
+                <div className="flex flex-wrap gap-1.5">
+                  {chanceStatus.blockReasons.map((reason) => (
+                    <span key={reason} className="rounded bg-red-500/10 px-2 py-1">
+                      {chanceReasonLabel[reason]}
+                    </span>
+                  ))}
+                </div>
+                <p className="mt-2 text-red-100/80">{chanceStatus.reason}</p>
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -246,6 +367,15 @@ export default function Settings() {
           <p className="text-sm text-slate-400">VitDaily <span className="text-slate-500">v0.1.0</span></p>
         </div>
       </section>
+    </div>
+  );
+}
+
+function StatusCell({ label, value, danger = false }: { label: string; value: string; danger?: boolean }) {
+  return (
+    <div className="rounded border border-slate-700 bg-slate-900/40 px-3 py-2">
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className={`mt-1 truncate ${danger ? "text-red-300" : "text-slate-200"}`}>{value}</p>
     </div>
   );
 }
