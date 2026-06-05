@@ -258,8 +258,10 @@ export interface StrategySignalEvaluation {
   threadId: string;
   market: SupportedMarket;
   strategyProfile: StrategyProfile;
+  strategyVersion?: string;
   action: PaperSignalAction;
   reason: string;
+  exitReason?: string | null;
   evaluatedAt: string;
   candleTimestamp: string;
   priceKrw: number;
@@ -272,6 +274,8 @@ export interface PaperExecutionResult {
   idempotencyKey: string;
   duplicate: boolean;
   log?: PurchaseLog | null;
+  realizedPnlKrw?: number | null;
+  positionOpen?: boolean;
   message: string;
 }
 
@@ -280,6 +284,7 @@ export type ThreadAutoLoopMode = "paper" | "live";
 export type ThreadAutoLoopAction =
   | "paper_tick"
   | "live_market_buy_submitted"
+  | "live_market_sell_submitted"
   | "live_gate_blocked"
   | "duplicate_tick"
   | "retry_limited"
@@ -320,6 +325,8 @@ export interface InvestmentThread {
 export interface ThreadValidationResult {
   id: string;
   threadId: string;
+  strategyVersion?: string;
+  strategyVariantLabel?: string;
   status: ValidationStatus;
   periodDays: number;
   periodStart: string;
@@ -336,9 +343,20 @@ export interface ThreadValidationResult {
   recent90dReturnPercent: number;
   recent90dDcaReturnPercent: number;
   feesKrw: number;
+  costDragKrw?: number;
   feePercent: number;
   slippagePercent: number;
   doubledSlippageReturnPercent: number;
+  roundTrips?: number;
+  winRatePercent?: number;
+  profitFactor?: number;
+  expectancyKrw?: number;
+  averageHoldHours?: number;
+  exposurePercent?: number;
+  cashFlatReturnPercent?: number;
+  stopExitCount?: number;
+  timeExitCount?: number;
+  dayFlatExitCount?: number;
   reasons: string[];
   assumptions: string[];
   createdAt: string;

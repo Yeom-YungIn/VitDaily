@@ -464,8 +464,12 @@ pub struct StrategySignalEvaluation {
     pub thread_id: Uuid,
     pub market: SupportedMarket,
     pub strategy_profile: StrategyProfile,
+    #[serde(default)]
+    pub strategy_version: String,
     pub action: PaperSignalAction,
     pub reason: String,
+    #[serde(default)]
+    pub exit_reason: Option<String>,
     pub evaluated_at: DateTime<Utc>,
     pub candle_timestamp: DateTime<Utc>,
     pub price_krw: f64,
@@ -480,6 +484,10 @@ pub struct PaperExecutionResult {
     pub idempotency_key: String,
     pub duplicate: bool,
     pub log: Option<PurchaseLog>,
+    #[serde(default)]
+    pub realized_pnl_krw: Option<i64>,
+    #[serde(default)]
+    pub position_open: bool,
     pub message: String,
 }
 
@@ -495,6 +503,7 @@ pub enum ThreadAutoLoopMode {
 pub enum ThreadAutoLoopAction {
     PaperTick,
     LiveMarketBuySubmitted,
+    LiveMarketSellSubmitted,
     LiveGateBlocked,
     DuplicateTick,
     RetryLimited,
@@ -545,6 +554,10 @@ pub struct InvestmentThread {
 pub struct ThreadValidationResult {
     pub id: Uuid,
     pub thread_id: Uuid,
+    #[serde(default)]
+    pub strategy_version: String,
+    #[serde(default)]
+    pub strategy_variant_label: String,
     pub status: ValidationStatus,
     pub period_days: u32,
     pub period_start: DateTime<Utc>,
@@ -561,9 +574,31 @@ pub struct ThreadValidationResult {
     pub recent_90d_return_percent: f64,
     pub recent_90d_dca_return_percent: f64,
     pub fees_krw: u64,
+    #[serde(default)]
+    pub cost_drag_krw: u64,
     pub fee_percent: f64,
     pub slippage_percent: f64,
     pub doubled_slippage_return_percent: f64,
+    #[serde(default)]
+    pub round_trips: u32,
+    #[serde(default)]
+    pub win_rate_percent: f64,
+    #[serde(default)]
+    pub profit_factor: f64,
+    #[serde(default)]
+    pub expectancy_krw: f64,
+    #[serde(default)]
+    pub average_hold_hours: f64,
+    #[serde(default)]
+    pub exposure_percent: f64,
+    #[serde(default)]
+    pub cash_flat_return_percent: f64,
+    #[serde(default)]
+    pub stop_exit_count: u32,
+    #[serde(default)]
+    pub time_exit_count: u32,
+    #[serde(default)]
+    pub day_flat_exit_count: u32,
     pub reasons: Vec<String>,
     pub assumptions: Vec<String>,
     pub created_at: DateTime<Utc>,

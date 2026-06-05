@@ -6,10 +6,11 @@ import { logError } from "../utils/logging";
 
 const markets: SupportedMarket[] = ["KRW-BTC", "KRW-ETH", "KRW-XRP"];
 const fallbackLiveConfirmationPhrase = "실거래 위험을 이해하고 실제 주문을 활성화합니다";
+const currentStrategyVersion = "intraday_mean_reversion_v1";
 const strategies: Array<{ value: StrategyProfile; label: string; description: string }> = [
-  { value: "stable", label: "안정형", description: "천천히 사고 손실 방어를 우선합니다" },
-  { value: "conservative", label: "균형형", description: "추세와 되돌림을 함께 봅니다" },
-  { value: "aggressive", label: "공격형", description: "기회가 보이면 더 자주 움직입니다" },
+  { value: "stable", label: "안정 평균회귀", description: "하루 1회 이내로 짧게 사고팝니다" },
+  { value: "conservative", label: "보수 평균회귀", description: "하단 회복과 반등 목표를 함께 봅니다" },
+  { value: "aggressive", label: "공격 평균회귀", description: "더 자주 반등 구간을 검증합니다" },
 ];
 
 export default function Threads() {
@@ -519,8 +520,9 @@ function ThreadDetail({
   const finalConfirmationSaved = thread.finalConfirmationStatus === "confirmed"
     && thread.finalConfirmationText === liveConfirmationPhrase
     && Boolean(thread.finalConfirmedAt);
-  const canRequestActivation = ["draft", "paper", "paused", "armed"].includes(thread.status) && thread.validationStatus === "pass";
-  const canStartLive = thread.status === "armed" && thread.validationStatus === "pass" && finalConfirmationSaved;
+  const isCurrentValidation = validationResult?.strategyVersion === currentStrategyVersion;
+  const canRequestActivation = ["draft", "paper", "paused", "armed"].includes(thread.status);
+  const canStartLive = thread.status === "armed" && finalConfirmationSaved;
   const canSubmitLiveBuy = thread.status === "live" && finalConfirmationSaved;
   const canSubmitLiveSell = canSubmitLiveBuy && Number(sellVolume) > 0;
   const canPause = thread.status === "paper" || thread.status === "armed" || thread.status === "live";
@@ -528,7 +530,7 @@ function ThreadDetail({
   const canComplete = ["paper", "paused", "armed", "live"].includes(thread.status);
   const canRunPaper = thread.status === "draft" || thread.status === "paper";
   const canRunAutoLoop = thread.status === "paper" || thread.status === "live";
-  const readinessBlockers = liveReadinessBlockers(thread, validationResult, finalConfirmationSaved);
+  const readinessBlockers = liveReadinessBlockers(thread, finalConfirmationSaved);
   const guide = nextActionGuide(thread, validationResult, finalConfirmationSaved);
 
   return (
@@ -566,7 +568,7 @@ function ThreadDetail({
         </div>
         <div className="mt-4 grid gap-2 sm:grid-cols-4">
           <ProgressPill active={guide.step === 1} done={thread.validationStatus !== "missing"} label="1 전략 등록" />
-          <ProgressPill active={guide.step === 2} done={thread.validationStatus === "pass"} label="2 과거 테스트" />
+          <ProgressPill active={guide.step === 2} done={thread.validationStatus !== "missing"} label="2 과거 테스트" />
           <ProgressPill active={guide.step === 3} done={thread.status !== "draft"} label="3 모의 실행" />
           <ProgressPill active={guide.step === 4} done={["armed", "live"].includes(thread.status)} label="4 실거래 준비" />
         </div>
@@ -581,7 +583,7 @@ function ThreadDetail({
             disabled={isRunningBacktest}
             className="mt-4 w-full rounded bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
-            {isRunningBacktest ? "테스트 실행 중..." : "최근 1년으로 테스트"}
+            {isRunningBacktest ? "테스트 실행 중..." : "투자 기간으로 테스트"}
           </button>
           <p className="mt-2 text-xs text-slate-500">업비트 공개 가격 데이터로 계산하며 실제 주문은 보내지 않습니다.</p>
         </div>
@@ -732,6 +734,9 @@ function ThreadDetail({
             <Metric label="신호" value={paperActionLabel(paperResult.signal.action)} />
             <Metric label="평가 가격" value={`${Math.round(paperResult.signal.priceKrw).toLocaleString()}원`} />
             <Metric label="모의 로그" value={paperResult.log ? "기록됨" : "없음"} />
+            <Metric label="포지션" value={paperResult.positionOpen ? "열림" : "없음"} />
+            <Metric label="추정 손익" value={paperResult.realizedPnlKrw == null ? "-" : `${paperResult.realizedPnlKrw.toLocaleString()}원`} />
+            <Metric label="전략 버전" value={paperResult.signal.strategyVersion ?? "legacy"} />
             <Metric label="실거래 보호" value={paperResult.liveOrderGate.allowed ? "통과" : "차단 확인"} tone={paperResult.liveOrderGate.allowed ? "default" : "danger"} />
           </div>
           <p className="mt-3 text-xs text-cyan-100/80">{friendlySystemText(paperResult.signal.reason)}</p>
@@ -749,18 +754,28 @@ function ThreadDetail({
                 {formatDate(validationResult.periodStart)} - {formatDate(validationResult.periodEnd)}
               </p>
             </div>
-            <ValidationBadge status={validationResult.status} />
+            <div className="flex flex-col items-start gap-2 sm:items-end">
+              <ValidationBadge status={validationResult.status} />
+              <span className={`rounded px-2 py-1 text-[11px] ${isCurrentValidation ? "bg-cyan-500/10 text-cyan-200" : "bg-yellow-500/10 text-yellow-200"}`}>
+                {isCurrentValidation ? validationResult.strategyVariantLabel ?? "평균회귀 v1" : "legacy 결과 · 재검증 필요"}
+              </span>
+            </div>
           </div>
           <ValidationChart result={validationResult} />
           <div className="mt-4 grid gap-3 md:grid-cols-4">
             <Metric label="전략 수익률" value={formatPercent(validationResult.returnPercent)} />
+            <Metric label="현금 대기" value={formatPercent(validationResult.cashFlatReturnPercent ?? 0)} />
+            <Metric label="Round-trip" value={`${validationResult.roundTrips ?? 0}회`} />
+            <Metric label="기대값" value={`${Math.round(validationResult.expectancyKrw ?? 0).toLocaleString()}원`} />
+            <Metric label="Profit factor" value={(validationResult.profitFactor ?? 0).toFixed(2)} />
+            <Metric label="승률" value={formatPercent(validationResult.winRatePercent ?? 0)} />
+            <Metric label="노출 시간" value={formatPercent(validationResult.exposurePercent ?? 0)} />
+            <Metric label="평균 보유" value={`${(validationResult.averageHoldHours ?? 0).toFixed(2)}h`} />
             <Metric label="최대 낙폭" value={formatPercent(validationResult.maxDrawdownPercent)} tone="danger" />
-            <Metric label="나눠 사기 기준" value={formatPercent(validationResult.baselineDcaReturnPercent)} />
-            <Metric label="처음에 전부 사기" value={formatPercent(validationResult.baselineBuyHoldReturnPercent)} />
-            <Metric label="거래 횟수" value={`${validationResult.simulatedTrades}건`} />
-            <Metric label="수수료" value={`${validationResult.feesKrw.toLocaleString()}원`} />
-            <Metric label="체결 비용 가정" value={`${validationResult.slippagePercent}%`} />
             <Metric label="최근 90일" value={formatPercent(validationResult.recent90dReturnPercent)} />
+            <Metric label="2배 비용" value={formatPercent(validationResult.doubledSlippageReturnPercent)} />
+            <Metric label="비용 합계" value={`${(validationResult.costDragKrw ?? validationResult.feesKrw).toLocaleString()}원`} />
+            <Metric label="청산 사유" value={`${validationResult.stopExitCount ?? 0}/${validationResult.timeExitCount ?? 0}/${validationResult.dayFlatExitCount ?? 0}`} />
           </div>
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             <ResultList title="판정 사유" items={validationResult.reasons} />
@@ -772,11 +787,8 @@ function ThreadDetail({
   );
 }
 
-function liveReadinessBlockers(thread: InvestmentThread, validationResult: ThreadValidationResult | null, finalConfirmationSaved: boolean): string[] {
+function liveReadinessBlockers(thread: InvestmentThread, finalConfirmationSaved: boolean): string[] {
   const blockers: string[] = [];
-  if (thread.validationStatus !== "pass" || validationResult?.status !== "pass") {
-    blockers.push("백테스트 통과 필요");
-  }
   if (["stopped", "completed"].includes(thread.status)) {
     blockers.push("종료된 전략은 실거래 차단");
   }
@@ -814,8 +826,8 @@ function ProgressPill({ label, active, done }: { label: string; active: boolean;
 }
 
 function nextStepText(thread: InvestmentThread): string {
-  if (thread.validationStatus === "missing") return "다음: 과거 테스트 실행";
-  if (thread.validationStatus === "fail") return "다음: 조건을 조정하고 다시 테스트";
+  if (thread.validationStatus === "missing") return "다음: 과거 테스트 또는 모의 실행";
+  if (thread.validationStatus === "fail") return "다음: 결과 참고 후 모의 실행";
   if (thread.status === "draft") return "다음: 모의 실행으로 신호 확인";
   if (thread.status === "paper") return "다음: 실거래 준비 여부 결정";
   if (thread.status === "armed") return "다음: 실거래 시작";
@@ -829,19 +841,19 @@ function nextActionGuide(thread: InvestmentThread, validationResult: ThreadValid
   if (thread.validationStatus === "missing" || !validationResult) {
     return {
       step: 2,
-      stepLabel: "과거 테스트 필요",
-      title: "먼저 최근 1년 데이터로 테스트하세요",
-      description: "전략은 등록됐지만 아직 과거 가격으로 검증되지 않았습니다.",
-      help: "테스트는 실제 주문을 보내지 않고 수익률, 손실 폭, 거래 횟수를 계산합니다.",
+      stepLabel: "과거 테스트 선택",
+      title: "원하면 투자 기간만큼의 데이터를 먼저 확인하세요",
+      description: "백테스트는 참고 지표이며 모의 실행이나 투자 준비를 막지 않습니다.",
+      help: "테스트는 실제 주문을 보내지 않고 설정한 투자 기간만큼 수익률, 손실 폭, 거래 횟수를 계산합니다.",
     };
   }
   if (thread.validationStatus === "fail" || validationResult.status === "fail") {
     return {
-      step: 2,
-      stepLabel: "조건 조정 필요",
-      title: "전략 조건을 낮추거나 기간을 바꿔 다시 테스트하세요",
-      description: "현재 조건은 앱의 손실/성과 기준을 통과하지 못했습니다.",
-      help: "투자금, 손실 기준, 하루 매매 횟수, 투자 성향을 조정한 뒤 다시 테스트할 수 있습니다.",
+      step: 3,
+      stepLabel: "모의 실행 가능",
+      title: "백테스트 결과를 참고하고 오늘 신호를 모의 실행하세요",
+      description: "백테스트 실패는 정보성 결과이며 다음 단계 진행 조건이 아닙니다.",
+      help: "조건을 조정해 다시 테스트할 수도 있고, 바로 모의 실행으로 현재 신호 품질을 확인할 수도 있습니다.",
     };
   }
   if (thread.status === "draft") {
@@ -849,7 +861,7 @@ function nextActionGuide(thread: InvestmentThread, validationResult: ThreadValid
       step: 3,
       stepLabel: "모의 실행 가능",
       title: "오늘 신호를 모의 실행하세요",
-      description: "과거 테스트를 통과했고, 이제 실제 주문 없이 오늘의 신호를 확인할 수 있습니다.",
+      description: "백테스트와 별개로 실제 주문 없이 오늘의 신호를 확인할 수 있습니다.",
       help: "모의 실행은 주문 로그처럼 기록되지만 돈은 움직이지 않습니다.",
     };
   }
@@ -942,11 +954,12 @@ function autoLoopActionLabel(action: ThreadAutoLoopResult["action"]): string {
   const labels: Record<ThreadAutoLoopResult["action"], string> = {
     paper_tick: "모의 점검",
     live_market_buy_submitted: "실제 매수 제출",
+    live_market_sell_submitted: "실제 매도 제출",
     live_gate_blocked: "보호장치 차단",
     duplicate_tick: "중복 점검",
     retry_limited: "재시도 제한",
     hold: "대기",
-    sell_skipped: "자동 매도 차단",
+    sell_skipped: "자동 매도 대기",
     skipped: "건너뜀",
   };
   return labels[action];

@@ -34,7 +34,7 @@ export default function Strategies() {
           <h2 className="text-lg font-semibold text-white">전략 프로필</h2>
           <p className="mt-1 text-sm text-slate-400">전략 기준은 구현 기준선이며, 백테스트/운영 증거에 따라 변경될 수 있습니다.</p>
         </div>
-        <span className="rounded bg-blue-500/10 px-3 py-1.5 text-xs text-blue-300">최근 1년 백테스트 연결됨</span>
+        <span className="rounded bg-blue-500/10 px-3 py-1.5 text-xs text-blue-300">평균회귀 v1 백테스트 연결됨</span>
       </div>
 
       {error && <p className="mb-4 rounded bg-red-500/10 px-3 py-2 text-sm text-red-300">전략 정보를 불러오지 못했습니다: {error}</p>}
@@ -81,11 +81,13 @@ export default function Strategies() {
                   <th className="py-2 pr-3">시장</th>
                   <th className="py-2 pr-3">전략</th>
                   <th className="py-2 pr-3">상태</th>
+                  <th className="py-2 pr-3">버전</th>
                   <th className="py-2 pr-3">수익률</th>
-                  <th className="py-2 pr-3">나눠 사기</th>
-                  <th className="py-2 pr-3">한 번에 사기</th>
-                  <th className="py-2 pr-3">최대 손실폭</th>
-                  <th className="py-2 pr-3">거래</th>
+                  <th className="py-2 pr-3">Round-trip</th>
+                  <th className="py-2 pr-3">PF</th>
+                  <th className="py-2 pr-3">노출</th>
+                  <th className="py-2 pr-3">평균 보유</th>
+                  <th className="py-2 pr-3">DCA 참고</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700 text-slate-300">
@@ -94,11 +96,15 @@ export default function Strategies() {
                     <td className="py-2 pr-3">{result.market}</td>
                     <td className="py-2 pr-3">{profileTitle(result.strategyProfile)}</td>
                     <td className={`py-2 pr-3 ${result.status === "pass" ? "text-green-300" : "text-red-300"}`}>{result.status === "pass" ? "통과" : "실패"}</td>
+                    <td className={`py-2 pr-3 ${result.strategyVersion === currentStrategyVersion ? "text-cyan-300" : "text-yellow-300"}`}>
+                      {result.strategyVersion === currentStrategyVersion ? "현재" : "legacy"}
+                    </td>
                     <td className="py-2 pr-3">{formatPercent(result.returnPercent)}</td>
+                    <td className="py-2 pr-3">{result.roundTrips ?? 0}회</td>
+                    <td className="py-2 pr-3">{(result.profitFactor ?? 0).toFixed(2)}</td>
+                    <td className="py-2 pr-3">{formatPercent(result.exposurePercent ?? 0)}</td>
+                    <td className="py-2 pr-3">{(result.averageHoldHours ?? 0).toFixed(1)}h</td>
                     <td className="py-2 pr-3">{formatPercent(result.baselineDcaReturnPercent)}</td>
-                    <td className="py-2 pr-3">{formatPercent(result.baselineBuyHoldReturnPercent)}</td>
-                    <td className="py-2 pr-3">{formatPercent(result.maxDrawdownPercent)}</td>
-                    <td className="py-2 pr-3">{result.simulatedTrades}건</td>
                   </tr>
                 ))}
               </tbody>
@@ -114,8 +120,10 @@ export default function Strategies() {
   );
 }
 
+const currentStrategyVersion = "intraday_mean_reversion_v1";
+
 function profileTitle(profile: ThreadValidationResult["strategyProfile"]): string {
-  return profile === "stable" ? "안정적" : profile === "conservative" ? "보수적" : "공격적";
+  return profile === "stable" ? "안정 평균회귀" : profile === "conservative" ? "보수 평균회귀" : "공격 평균회귀";
 }
 
 function formatPercent(value: number): string {

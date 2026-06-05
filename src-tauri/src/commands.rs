@@ -261,27 +261,27 @@ pub async fn get_strategy_profiles() -> Vec<StrategyProfileInfo> {
     vec![
         StrategyProfileInfo {
             profile: StrategyProfile::Stable,
-            title: "안정적".to_string(),
-            risk_label: "낮은 빈도 · 손실 제한 우선".to_string(),
-            trade_frequency: "0–2회/일".to_string(),
-            indicators: vec!["MACD 12/26/9".to_string(), "Bollinger 20/2".to_string(), "ATR 14".to_string()],
-            summary: "DCA에 가까운 저빈도 전략입니다. 강한 약세와 높은 변동성을 회피하고, 실거래 전 백테스트 통과가 필요합니다.".to_string(),
+            title: "안정 평균회귀".to_string(),
+            risk_label: "낮은 노출 · 1 round-trip/일".to_string(),
+            trade_frequency: "최대 1 round-trip/일".to_string(),
+            indicators: vec!["Bollinger 20/2".to_string(), "MACD 회복 확인".to_string(), "ATR stop".to_string()],
+            summary: "하단 밴드 회복 후 중단 목표에서 빠르게 정리합니다. 평균 보유 8시간과 시장 노출 20% 이하를 목표로 합니다.".to_string(),
         },
         StrategyProfileInfo {
             profile: StrategyProfile::Conservative,
-            title: "보수적".to_string(),
-            risk_label: "균형형 · 추세와 평균회귀 조합".to_string(),
-            trade_frequency: "0–5회/일".to_string(),
-            indicators: vec!["MACD 12/26/9".to_string(), "Bollinger 20/2".to_string(), "ATR 14".to_string()],
-            summary: "추세 확인과 과매수/과매도 신호를 함께 사용합니다. 첫 자동매매 구현 후보입니다.".to_string(),
+            title: "보수 평균회귀".to_string(),
+            risk_label: "균형형 · 2 round-trip/일".to_string(),
+            trade_frequency: "최대 2 round-trip/일".to_string(),
+            indicators: vec!["Bollinger 회복".to_string(), "MACD histogram".to_string(), "ATR stop".to_string()],
+            summary: "하단 밴드 회복과 MACD 개선을 함께 확인하고 중단/상단 회귀에서 청산합니다. 기본 검증 후보입니다.".to_string(),
         },
         StrategyProfileInfo {
             profile: StrategyProfile::Aggressive,
-            title: "공격적".to_string(),
-            risk_label: "높은 빈도 · 모멘텀/돌파".to_string(),
-            trade_frequency: "0–10회/일".to_string(),
-            indicators: vec!["MACD momentum".to_string(), "Bollinger breakout".to_string(), "ATR trailing stop".to_string()],
-            summary: "더 빠른 가격 변화와 돌파 신호를 활용합니다. 기본값으로 권장하지 않으며 강한 경고와 검증이 필요합니다.".to_string(),
+            title: "공격 평균회귀".to_string(),
+            risk_label: "높은 빈도 · 4 round-trip/일".to_string(),
+            trade_frequency: "최대 4 round-trip/일".to_string(),
+            indicators: vec!["Bollinger %B".to_string(), "MACD 반등".to_string(), "ATR trailing stop".to_string()],
+            summary: "더 낮은 밴드 구간에서 빠르게 진입하고 상단 회복을 노립니다. 노출 50%와 평균 보유 18시간 기준을 넘으면 실패 처리됩니다.".to_string(),
         },
     ]
 }
@@ -345,7 +345,9 @@ pub async fn run_thread_backtest(thread_id: String) -> Result<ThreadValidationRe
         .cloned()
         .ok_or_else(|| "백테스트할 스레드를 찾을 수 없습니다".to_string())?;
 
-    let candles = crate::strategy::fetch_recent_year_hourly_candles(&thread.market).await?;
+    let candles =
+        crate::strategy::fetch_backtest_hourly_candles(&thread.market, thread.duration_days)
+            .await?;
     let result = crate::strategy::run_backtest_for_thread(&thread, &candles)?;
 
     if let Some(saved_thread) = threads.iter_mut().find(|thread| thread.id == uuid) {
@@ -485,10 +487,6 @@ pub async fn activate_thread_live(
         );
     }
 
-    if thread.validation_status != ValidationStatus::Pass {
-        return Err("백테스트를 통과한 스레드만 실거래 준비 상태로 전환할 수 있습니다".to_string());
-    }
-
     let previous_thread = thread.clone();
     let confirmed_at = Utc::now();
     let mut activation_candidate = thread.clone();
@@ -591,9 +589,6 @@ pub async fn start_thread_live(thread_id: String) -> Result<InvestmentThread, St
 
     if thread.status != ThreadStatus::Armed {
         return Err("Armed 상태의 스레드만 Live로 전환할 수 있습니다".to_string());
-    }
-    if thread.validation_status != ValidationStatus::Pass {
-        return Err("백테스트를 통과한 스레드만 Live로 전환할 수 있습니다".to_string());
     }
     if !thread_has_valid_live_confirmation(thread) {
         return Err("저장된 최종 확인 문구가 유효하지 않아 Live 전환을 차단했습니다".to_string());
@@ -1199,10 +1194,11 @@ async fn run_live_auto_loop_tick_with_executor<E: LiveOrderExecutor>(
     let candles = crate::strategy::fetch_recent_signal_hourly_candles(&thread.market).await?;
     let signal = crate::strategy::evaluate_latest_signal_for_thread(&thread, &candles)?;
     let amount_krw = paper_order_amount_krw(&thread);
-    let idempotency_key = live_loop_idempotency_key(&thread, &signal, amount_krw);
     let logs = load_logs().map_err(|error| error.to_string())?;
+    let open_position = live_open_position(&thread, &logs);
 
     if signal.action == PaperSignalAction::Hold {
+        let idempotency_key = live_loop_idempotency_key(&thread, &signal, amount_krw);
         let _ = record_safety_event(
             Some(thread.id),
             SafetyEventDraft {
@@ -1231,26 +1227,123 @@ async fn run_live_auto_loop_tick_with_executor<E: LiveOrderExecutor>(
     }
 
     if signal.action == PaperSignalAction::Sell {
+        let Some(position) = open_position else {
+            let idempotency_key = live_loop_idempotency_key(&thread, &signal, amount_krw);
+            let _ = record_safety_event(
+                Some(thread.id),
+                SafetyEventDraft {
+                    event_type: SafetyEventType::Info,
+                    category: AuditCategory::Trade,
+                    source: Some("live_auto_loop".to_string()),
+                    related_schedule_id: None,
+                    reason: Some(format!(
+                        "idempotencyKey={idempotency_key}; signal=sell; openPosition=none; reason={}",
+                        signal.reason
+                    )),
+                },
+                format!("{} Live 자동 매도 대기 · 열린 포지션 없음", thread.name),
+            );
+            return Ok(ThreadAutoLoopResult {
+                thread_id: thread.id,
+                mode: ThreadAutoLoopMode::Live,
+                action: ThreadAutoLoopAction::SellSkipped,
+                message:
+                    "매도 신호가 있지만 이 스레드에서 확인된 열린 Live 포지션이 없어 매도하지 않았습니다"
+                        .to_string(),
+                idempotency_key: Some(idempotency_key),
+                retry_count: 0,
+                paper_result: None,
+                live_order_gate: None,
+                logs: Vec::new(),
+            });
+        };
+
+        let estimated_amount_krw = estimated_live_sell_amount_krw(&position, signal.price_krw);
+        let idempotency_key = live_loop_idempotency_key(&thread, &signal, estimated_amount_krw);
+
+        if live_loop_has_pending_or_filled_order(&logs, &idempotency_key) {
+            let retry_count = live_loop_failed_retry_count(&logs, &idempotency_key);
+            return Ok(ThreadAutoLoopResult {
+                thread_id: thread.id,
+                mode: ThreadAutoLoopMode::Live,
+                action: ThreadAutoLoopAction::DuplicateTick,
+                message: "동일한 Live tick 매도 주문이 이미 제출 또는 체결되어 중복 제출을 막았습니다"
+                    .to_string(),
+                idempotency_key: Some(idempotency_key),
+                retry_count: retry_count as u32,
+                paper_result: None,
+                live_order_gate: None,
+                logs: Vec::new(),
+            });
+        }
+
+        let retry_count = live_loop_failed_retry_count(&logs, &idempotency_key);
+        if retry_count >= LIVE_AUTO_LOOP_MAX_RETRIES_PER_TICK {
+            let _ = record_safety_event(
+                Some(thread.id),
+                SafetyEventDraft {
+                    event_type: SafetyEventType::Warning,
+                    category: AuditCategory::ApiFailure,
+                    source: Some("live_auto_loop".to_string()),
+                    related_schedule_id: None,
+                    reason: Some(format!(
+                        "idempotencyKey={idempotency_key}; retryCount={retry_count}; retryLimit={LIVE_AUTO_LOOP_MAX_RETRIES_PER_TICK}"
+                    )),
+                },
+                format!(
+                    "{} Live 자동 매도 retry 제한 도달 · {}회",
+                    thread.name, retry_count
+                ),
+            );
+            return Ok(ThreadAutoLoopResult {
+                thread_id: thread.id,
+                mode: ThreadAutoLoopMode::Live,
+                action: ThreadAutoLoopAction::RetryLimited,
+                message: "동일 tick의 Upbit 매도 오류 retry 제한에 도달해 주문을 제출하지 않았습니다"
+                    .to_string(),
+                idempotency_key: Some(idempotency_key),
+                retry_count: retry_count as u32,
+                paper_result: None,
+                live_order_gate: None,
+                logs: Vec::new(),
+            });
+        }
+
+        return submit_live_auto_market_sell_with_executor(
+            thread,
+            signal,
+            position,
+            estimated_amount_krw,
+            idempotency_key,
+            retry_count,
+            executor,
+        )
+        .await;
+    }
+
+    let idempotency_key = live_loop_idempotency_key(&thread, &signal, amount_krw);
+
+    if open_position.is_some() {
         let _ = record_safety_event(
             Some(thread.id),
             SafetyEventDraft {
-                event_type: SafetyEventType::Blocked,
-                category: AuditCategory::SafetyGate,
+                event_type: SafetyEventType::Info,
+                category: AuditCategory::Trade,
                 source: Some("live_auto_loop".to_string()),
                 related_schedule_id: None,
                 reason: Some(format!(
-                    "idempotencyKey={idempotency_key}; signal=sell; autoSellPolicy=manual_volume_required"
+                    "idempotencyKey={idempotency_key}; signal=buy; openPosition=present; reason={}",
+                    signal.reason
                 )),
             },
-            format!("{} Live 자동 매도 차단 · 수동 volume 정책 필요", thread.name),
+            format!("{} Live 자동 매수 대기 · 열린 포지션 유지", thread.name),
         );
         return Ok(ThreadAutoLoopResult {
             thread_id: thread.id,
             mode: ThreadAutoLoopMode::Live,
-            action: ThreadAutoLoopAction::SellSkipped,
-            message:
-                "자동 매도는 volume 정책이 없어 차단했습니다. 수동 Live 시장가 매도를 사용하세요"
-                    .to_string(),
+            action: ThreadAutoLoopAction::Hold,
+            message: "이미 열린 Live 포지션이 있어 추가 매수하지 않고 매도 신호를 기다립니다"
+                .to_string(),
             idempotency_key: Some(idempotency_key),
             retry_count: 0,
             paper_result: None,
@@ -2049,12 +2142,14 @@ fn build_paper_execution_result(
     amount_krw: u64,
 ) -> PaperExecutionResult {
     let idempotency_key = paper_idempotency_key(thread, &signal, amount_krw);
+    let open_position = paper_open_position(thread, existing_logs);
     let duplicate_log = existing_logs
         .iter()
         .find(|log| log.idempotency_key.as_deref() == Some(idempotency_key.as_str()))
         .cloned();
 
     if let Some(log) = duplicate_log {
+        let position_open = open_position.is_some();
         return PaperExecutionResult {
             thread_id: thread.id,
             signal,
@@ -2062,32 +2157,73 @@ fn build_paper_execution_result(
             idempotency_key,
             duplicate: true,
             log: Some(log),
+            realized_pnl_krw: None,
+            position_open,
             message: "동일한 Paper tick이 이미 기록되어 새 모의 주문을 만들지 않았습니다"
                 .to_string(),
         };
     }
 
-    let log = if signal.action == PaperSignalAction::Buy {
-        Some(build_paper_buy_log(
-            thread,
-            &signal,
-            &live_order_gate,
-            &idempotency_key,
-            amount_krw,
-        ))
-    } else {
-        None
-    };
-    let message = match signal.action {
+    let (log, realized_pnl_krw, position_open, message) = match signal.action {
         PaperSignalAction::Buy => {
-            "전략 신호가 모의 매수를 생성했고 실제 Upbit 주문은 제출하지 않았습니다"
+            if open_position.is_some() {
+                (
+                    None,
+                    None,
+                    true,
+                    "이미 열린 Paper 포지션이 있어 추가 모의 매수를 만들지 않았습니다".to_string(),
+                )
+            } else {
+                (
+                    Some(build_paper_buy_log(
+                        thread,
+                        &signal,
+                        &live_order_gate,
+                        &idempotency_key,
+                        amount_krw,
+                    )),
+                    None,
+                    true,
+                    "전략 신호가 모의 매수를 생성했고 실제 Upbit 주문은 제출하지 않았습니다"
+                        .to_string(),
+                )
+            }
         }
         PaperSignalAction::Sell => {
-            "전략 신호가 모의 청산을 제안했지만 현재 Live readiness 범위에서는 매도 주문 로그를 생성하지 않습니다"
+            if let Some(position) = open_position {
+                let log = build_paper_sell_log(
+                    thread,
+                    &signal,
+                    &live_order_gate,
+                    &idempotency_key,
+                    &position,
+                );
+                let realized = log.amount_krw as i64 - position.amount_krw as i64;
+                (
+                    Some(log),
+                    Some(realized),
+                    false,
+                    format!(
+                        "전략 신호가 Paper 포지션을 모의 청산했습니다 · 추정 P/L {}원 · 실제 Upbit 주문 없음",
+                        realized
+                    ),
+                )
+            } else {
+                (
+                    None,
+                    None,
+                    false,
+                    "열린 Paper 포지션이 없어 모의 매도 로그를 생성하지 않았습니다".to_string(),
+                )
+            }
         }
-        PaperSignalAction::Hold => "전략 신호가 대기 상태라 모의 주문을 생성하지 않았습니다",
-    }
-    .to_string();
+        PaperSignalAction::Hold => (
+            None,
+            None,
+            open_position.is_some(),
+            "전략 신호가 대기 상태라 모의 주문을 생성하지 않았습니다".to_string(),
+        ),
+    };
 
     PaperExecutionResult {
         thread_id: thread.id,
@@ -2096,6 +2232,8 @@ fn build_paper_execution_result(
         idempotency_key,
         duplicate: false,
         log,
+        realized_pnl_krw,
+        position_open,
         message,
     }
 }
@@ -2127,6 +2265,163 @@ fn build_paper_buy_log(
         action: PurchaseLogAction::MarketBuy,
         audit_category: AuditCategory::PaperTrade,
         title: Some("Paper 모의 매수".to_string()),
+        reason: Some(format!("Live Order Gate 확인: {}", live_order_gate.reason)),
+        safety_event_id: None,
+        strategy_signal_reason: Some(signal.reason.clone()),
+        idempotency_key: Some(idempotency_key.to_string()),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PaperOpenPosition {
+    amount_krw: u64,
+    volume_btc: f64,
+}
+
+#[derive(Debug, Clone)]
+struct LiveOpenPosition {
+    amount_krw: u64,
+    volume_btc: f64,
+}
+
+fn paper_open_position(
+    thread: &InvestmentThread,
+    existing_logs: &[PurchaseLog],
+) -> Option<PaperOpenPosition> {
+    let mut thread_logs: Vec<&PurchaseLog> = existing_logs
+        .iter()
+        .filter(|log| {
+            log.thread_id == Some(thread.id)
+                && log.source == PurchaseLogSource::InvestmentThread
+                && log.mode == ExecutionMode::Paper
+                && log.status == PurchaseStatus::Success
+                && matches!(
+                    log.action,
+                    PurchaseLogAction::MarketBuy | PurchaseLogAction::MarketSell
+                )
+        })
+        .collect();
+    thread_logs.sort_by(|a, b| a.executed_at.cmp(&b.executed_at));
+
+    let mut position: Option<PaperOpenPosition> = None;
+    for log in thread_logs {
+        match log.action {
+            PurchaseLogAction::MarketBuy => {
+                position = Some(PaperOpenPosition {
+                    amount_krw: log.amount_krw,
+                    volume_btc: log.volume_btc,
+                });
+            }
+            PurchaseLogAction::MarketSell => {
+                position = None;
+            }
+            PurchaseLogAction::SafetyCheck => {}
+        }
+    }
+    position
+}
+
+fn live_open_position(
+    thread: &InvestmentThread,
+    existing_logs: &[PurchaseLog],
+) -> Option<LiveOpenPosition> {
+    let mut thread_logs: Vec<&PurchaseLog> = existing_logs
+        .iter()
+        .filter(|log| {
+            log.thread_id == Some(thread.id)
+                && log.source == PurchaseLogSource::InvestmentThread
+                && log.mode == ExecutionMode::Live
+                && matches!(log.status, PurchaseStatus::Filled | PurchaseStatus::Success)
+                && matches!(
+                    log.action,
+                    PurchaseLogAction::MarketBuy | PurchaseLogAction::MarketSell
+                )
+        })
+        .collect();
+    thread_logs.sort_by(|a, b| a.executed_at.cmp(&b.executed_at));
+
+    let mut position: Option<LiveOpenPosition> = None;
+    for log in thread_logs {
+        match log.action {
+            PurchaseLogAction::MarketBuy => {
+                if log.volume_btc <= f64::EPSILON {
+                    continue;
+                }
+                if let Some(open) = position.as_mut() {
+                    open.amount_krw = open.amount_krw.saturating_add(log.amount_krw);
+                    open.volume_btc += log.volume_btc;
+                } else {
+                    position = Some(LiveOpenPosition {
+                        amount_krw: log.amount_krw,
+                        volume_btc: log.volume_btc,
+                    });
+                }
+            }
+            PurchaseLogAction::MarketSell => {
+                let Some(open) = position.as_mut() else {
+                    continue;
+                };
+                if log.volume_btc + f64::EPSILON >= open.volume_btc {
+                    position = None;
+                } else {
+                    let remaining_ratio = (open.volume_btc - log.volume_btc) / open.volume_btc;
+                    open.volume_btc -= log.volume_btc;
+                    open.amount_krw = ((open.amount_krw as f64) * remaining_ratio).round() as u64;
+                }
+            }
+            PurchaseLogAction::SafetyCheck => {}
+        }
+    }
+
+    position.filter(|position| position.volume_btc > f64::EPSILON)
+}
+
+fn estimated_live_sell_amount_krw(position: &LiveOpenPosition, price_krw: f64) -> u64 {
+    if !price_krw.is_finite() || price_krw <= 0.0 {
+        return 0;
+    }
+    (position.volume_btc * price_krw * 0.9995)
+        .round()
+        .max(0.0) as u64
+}
+
+fn format_live_order_volume(volume: f64) -> String {
+    let trimmed = format!("{volume:.12}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string();
+    if trimmed == "0" || trimmed.is_empty() {
+        volume.to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn build_paper_sell_log(
+    thread: &InvestmentThread,
+    signal: &StrategySignalEvaluation,
+    live_order_gate: &LiveOrderGateDecision,
+    idempotency_key: &str,
+    position: &PaperOpenPosition,
+) -> PurchaseLog {
+    let estimated_amount_krw = (position.volume_btc * signal.price_krw * 0.9995)
+        .round()
+        .max(0.0) as u64;
+
+    PurchaseLog {
+        id: uuid::Uuid::new_v4(),
+        schedule_id: uuid::Uuid::nil(),
+        thread_id: Some(thread.id),
+        executed_at: signal.evaluated_at,
+        amount_krw: estimated_amount_krw,
+        volume_btc: position.volume_btc,
+        status: PurchaseStatus::Success,
+        error_message: None,
+        source: PurchaseLogSource::InvestmentThread,
+        mode: ExecutionMode::Paper,
+        action: PurchaseLogAction::MarketSell,
+        audit_category: AuditCategory::PaperTrade,
+        title: Some("Paper 모의 매도".to_string()),
         reason: Some(format!("Live Order Gate 확인: {}", live_order_gate.reason)),
         safety_event_id: None,
         strategy_signal_reason: Some(signal.reason.clone()),
@@ -2286,7 +2581,6 @@ struct LiveOrderGateData<'a> {
     settings: Result<&'a AppSettings, String>,
     credentials_available: Result<bool, String>,
     logs: Result<&'a [PurchaseLog], String>,
-    validation_results: Result<&'a [ThreadValidationResult], String>,
 }
 
 #[allow(dead_code)]
@@ -2375,7 +2669,6 @@ struct UpbitLiveOrderExecutor;
 fn evaluate_live_order_gate(input: LiveOrderGateInput) -> LiveOrderGateDecision {
     let settings = load_settings();
     let logs = load_logs();
-    let validation_results = load_thread_validation_results();
 
     evaluate_live_order_gate_with_data(
         input,
@@ -2383,10 +2676,6 @@ fn evaluate_live_order_gate(input: LiveOrderGateInput) -> LiveOrderGateDecision 
             settings: settings.as_ref().map_err(|error| error.to_string()),
             credentials_available: Ok(get_credentials().is_ok()),
             logs: logs
-                .as_ref()
-                .map(|items| items.as_slice())
-                .map_err(|error| error.to_string()),
-            validation_results: validation_results
                 .as_ref()
                 .map(|items| items.as_slice())
                 .map_err(|error| error.to_string()),
@@ -2451,7 +2740,7 @@ fn evaluate_live_order_gate_with_data(
         block_reasons.push(LiveOrderGateBlockReason::DailyTradeCapExceeded);
     }
 
-    let mut latest_max_drawdown_percent = None;
+    let latest_max_drawdown_percent = None;
     match input.source {
         LiveOrderGateSource::LegacySchedule => {
             block_reasons.push(LiveOrderGateBlockReason::LegacyScheduleNotMigrated);
@@ -2461,7 +2750,6 @@ fn evaluate_live_order_gate_with_data(
             let Some(thread) = input.thread.as_ref() else {
                 block_reasons.push(LiveOrderGateBlockReason::LiveModeNotEnabled);
                 block_reasons.push(LiveOrderGateBlockReason::FinalConfirmationMissing);
-                block_reasons.push(LiveOrderGateBlockReason::ValidationMissing);
                 let check = build_live_order_gate_check(
                     &input,
                     final_confirmation_status,
@@ -2479,25 +2767,6 @@ fn evaluate_live_order_gate_with_data(
 
             if !thread_has_valid_live_confirmation(thread) {
                 block_reasons.push(LiveOrderGateBlockReason::FinalConfirmationMissing);
-            }
-
-            match data.validation_results {
-                Ok(results) => {
-                    if let Some(result) = latest_validation_for_thread(thread.id, results) {
-                        latest_max_drawdown_percent = Some(result.max_drawdown_percent);
-                        if result.status != ValidationStatus::Pass
-                            || thread.validation_status != ValidationStatus::Pass
-                        {
-                            block_reasons.push(LiveOrderGateBlockReason::ValidationNotPassed);
-                        }
-                        if result.max_drawdown_percent > thread.max_loss_percent {
-                            block_reasons.push(LiveOrderGateBlockReason::MaxLossExceeded);
-                        }
-                    } else {
-                        block_reasons.push(LiveOrderGateBlockReason::ValidationMissing);
-                    }
-                }
-                Err(_) => block_reasons.push(LiveOrderGateBlockReason::AuditDataUnavailable),
             }
         }
     }
@@ -2675,16 +2944,6 @@ fn live_daily_trade_count(
             LiveOrderGateSource::LegacySchedule => related_schedule_id == Some(log.schedule_id),
         })
         .count() as u32
-}
-
-fn latest_validation_for_thread(
-    thread_id: uuid::Uuid,
-    results: &[ThreadValidationResult],
-) -> Option<&ThreadValidationResult> {
-    results
-        .iter()
-        .filter(|result| result.thread_id == thread_id)
-        .max_by(|left, right| left.created_at.cmp(&right.created_at))
 }
 
 #[allow(dead_code)]
@@ -2962,6 +3221,145 @@ async fn submit_thread_live_market_buy_with_executor<E: LiveOrderExecutor>(
             logs.push(failed_log);
             persist_logs(&logs).map_err(|e| e.to_string())?;
             Err(error)
+        }
+    }
+}
+
+async fn submit_live_auto_market_sell_with_executor<E: LiveOrderExecutor>(
+    thread: InvestmentThread,
+    signal: StrategySignalEvaluation,
+    position: LiveOpenPosition,
+    estimated_amount_krw: u64,
+    idempotency_key: String,
+    retry_count: usize,
+    executor: &E,
+) -> Result<ThreadAutoLoopResult, String> {
+    let checked_at = signal.evaluated_at;
+    let volume = format_live_order_volume(position.volume_btc);
+    let identifier = live_loop_order_identifier(&idempotency_key, &LiveOrderIntent::MarketSell);
+    let order_request = build_upbit_order_request_with_identifier(
+        &thread.market,
+        LiveOrderIntent::MarketSell,
+        estimated_amount_krw,
+        Some(volume.clone()),
+        Some(identifier),
+    )?;
+    let credentials = get_credentials().map_err(|error| error.to_string());
+    let order_chance = match &credentials {
+        Ok((access_key, secret_key)) => {
+            executor
+                .order_chance(access_key, secret_key, &thread.market)
+                .await
+        }
+        Err(error) => Err(error.clone()),
+    };
+    let chance_error = order_chance.as_ref().err().cloned();
+    let gate = evaluate_live_order_gate(
+        LiveOrderGateInput::investment_thread(&thread, estimated_amount_krw, checked_at)
+            .with_order_probe(
+                LiveOrderIntent::MarketSell,
+                order_request.preview.clone(),
+                order_chance,
+            ),
+    );
+
+    if !gate.allowed {
+        let safety_event_id = record_live_order_gate_block_event(&gate).ok();
+        let mut logs = load_logs().map_err(|error| error.to_string())?;
+        if !logs
+            .iter()
+            .any(|log| log.idempotency_key.as_deref() == Some(idempotency_key.as_str()))
+        {
+            let mut blocked_log = build_live_order_blocked_log(&gate, safety_event_id);
+            blocked_log.idempotency_key = Some(idempotency_key.clone());
+            blocked_log.strategy_signal_reason = Some(signal.reason.clone());
+            logs.push(blocked_log);
+            persist_logs(&logs).map_err(|error| error.to_string())?;
+        }
+        return Ok(ThreadAutoLoopResult {
+            thread_id: thread.id,
+            mode: ThreadAutoLoopMode::Live,
+            action: ThreadAutoLoopAction::LiveGateBlocked,
+            message: chance_error
+                .map(|error| format!("{} · {}", gate.reason, error))
+                .unwrap_or_else(|| gate.reason.clone()),
+            idempotency_key: Some(idempotency_key),
+            retry_count: retry_count as u32,
+            paper_result: None,
+            live_order_gate: Some(gate),
+            logs: Vec::new(),
+        });
+    }
+
+    let (access_key, secret_key) = credentials?;
+    let request = LiveMarketSellRequest {
+        thread_id: thread.id,
+        volume,
+        estimated_amount_krw: Some(estimated_amount_krw),
+        policy_reason: Some("live_auto_loop_strategy_signal_sell".to_string()),
+    };
+    let mut submission = prepare_live_market_sell_submission_with_request(
+        &thread,
+        request,
+        &gate,
+        order_request,
+        checked_at,
+    )?;
+    submission.idempotency_key = Some(idempotency_key.clone());
+
+    let submitted_event_id =
+        record_live_market_sell_submitted_event(&submission).map_err(|error| error.to_string())?;
+    let mut submitted_log = build_live_market_sell_submitted_log(&submission);
+    submitted_log.safety_event_id = Some(submitted_event_id);
+    submitted_log.strategy_signal_reason = Some(signal.reason.clone());
+
+    let mut logs = load_logs().map_err(|error| error.to_string())?;
+    logs.push(submitted_log.clone());
+    persist_logs(&logs).map_err(|error| error.to_string())?;
+
+    match executor
+        .market_sell(&access_key, &secret_key, &submission)
+        .await
+    {
+        Ok(receipt) => {
+            let filled_event_id = record_live_market_sell_filled_event(&submission, &receipt)
+                .map_err(|error| error.to_string())?;
+            let mut filled_log = build_live_market_sell_filled_log(&submission, &receipt);
+            filled_log.safety_event_id = Some(filled_event_id);
+            filled_log.strategy_signal_reason = Some(signal.reason);
+            logs.push(filled_log.clone());
+            persist_logs(&logs).map_err(|error| error.to_string())?;
+            Ok(ThreadAutoLoopResult {
+                thread_id: thread.id,
+                mode: ThreadAutoLoopMode::Live,
+                action: ThreadAutoLoopAction::LiveMarketSellSubmitted,
+                message: "Live 자동 tick이 열린 포지션 수량으로 시장가 매도를 제출했습니다"
+                    .to_string(),
+                idempotency_key: Some(idempotency_key),
+                retry_count: retry_count as u32,
+                paper_result: None,
+                live_order_gate: Some(gate),
+                logs: vec![submitted_log, filled_log],
+            })
+        }
+        Err(error) => {
+            let failed_event_id = record_live_market_sell_failed_event(&submission, &error).ok();
+            let mut failed_log =
+                build_live_market_sell_failed_log(&submission, &error, failed_event_id);
+            failed_log.strategy_signal_reason = Some(signal.reason);
+            logs.push(failed_log.clone());
+            persist_logs(&logs).map_err(|persist_error| persist_error.to_string())?;
+            Ok(ThreadAutoLoopResult {
+                thread_id: thread.id,
+                mode: ThreadAutoLoopMode::Live,
+                action: ThreadAutoLoopAction::Skipped,
+                message: format!("Upbit 매도 주문 오류로 retry 대상이 되었습니다: {error}"),
+                idempotency_key: Some(idempotency_key),
+                retry_count: retry_count as u32 + 1,
+                paper_result: None,
+                live_order_gate: Some(gate),
+                logs: vec![submitted_log, failed_log],
+            })
         }
     }
 }
@@ -4526,7 +4924,6 @@ mod tests {
         };
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = Vec::new();
 
         let gate = evaluate_live_order_gate_with_data(
             LiveOrderGateInput::legacy_schedule(&schedule),
@@ -4534,7 +4931,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4556,7 +4952,6 @@ mod tests {
         thread.validation_status = ValidationStatus::Pass;
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
 
         let gate = evaluate_live_order_gate_with_data(
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
@@ -4564,7 +4959,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4584,7 +4978,6 @@ mod tests {
         thread.final_confirmation_status = LiveOrderFinalConfirmationStatus::Confirmed;
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
 
         let gate = evaluate_live_order_gate_with_data(
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
@@ -4592,7 +4985,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4610,7 +5002,6 @@ mod tests {
         let mut settings = unlocked_settings();
         settings.strategy_logic_approved = false;
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
 
         let gate = evaluate_live_order_gate_with_data(
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
@@ -4618,7 +5009,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(false),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4637,7 +5027,6 @@ mod tests {
         let now = Utc::now();
         let thread = confirmed_live_thread(now);
         let settings = unlocked_settings();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
         let logs = (0..thread.daily_trade_cap)
             .map(|_| sample_thread_purchase_log(&thread, now))
             .collect::<Vec<_>>();
@@ -4648,7 +5037,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4661,12 +5049,11 @@ mod tests {
     }
 
     #[test]
-    fn shared_gate_blocks_live_thread_when_validation_exceeds_max_loss() {
+    fn shared_gate_does_not_block_live_thread_when_backtest_exceeds_max_loss() {
         let now = Utc::now();
         let thread = confirmed_live_thread(now);
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, -18.0, 60.0)];
 
         let gate = evaluate_live_order_gate_with_data(
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
@@ -4674,17 +5061,39 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
-        assert!(!gate.allowed);
+        assert!(gate.allowed);
         assert_eq!(gate.check.max_loss_percent, Some(50.0));
-        assert_eq!(gate.check.latest_max_drawdown_percent, Some(60.0));
-        assert!(gate
+        assert_eq!(gate.check.latest_max_drawdown_percent, None);
+        assert!(!gate
             .block_reasons
             .contains(&LiveOrderGateBlockReason::MaxLossExceeded));
-        assert!(live_order_approval_from_gate(&gate).is_none());
+        assert!(live_order_approval_from_gate(&gate).is_some());
+    }
+
+    #[test]
+    fn shared_gate_does_not_block_legacy_validation_strategy_version() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let settings = unlocked_settings();
+        let logs = Vec::new();
+
+        let gate = evaluate_live_order_gate_with_data(
+            LiveOrderGateInput::investment_thread(&thread, 20_000, now),
+            LiveOrderGateData {
+                settings: Ok(&settings),
+                credentials_available: Ok(true),
+                logs: Ok(&logs),
+            },
+        );
+
+        assert!(gate.allowed);
+        assert!(!gate
+            .block_reasons
+            .contains(&LiveOrderGateBlockReason::ValidationNotPassed));
+        assert!(live_order_approval_from_gate(&gate).is_some());
     }
 
     #[test]
@@ -4693,7 +5102,6 @@ mod tests {
         let thread = confirmed_live_thread(now);
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
 
         let gate = evaluate_live_order_gate_with_data(
             LiveOrderGateInput::investment_thread(&thread, 20_000, now),
@@ -4701,7 +5109,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4719,7 +5126,6 @@ mod tests {
         let thread = confirmed_live_thread(now);
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
         let request =
             build_upbit_order_request(&thread.market, LiveOrderIntent::MarketBuy, 20_000, None)
                 .expect("buy request");
@@ -4736,7 +5142,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4757,7 +5162,6 @@ mod tests {
         let thread = confirmed_live_thread(now);
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
         let request = build_upbit_order_request(
             &thread.market,
             LiveOrderIntent::MarketSell,
@@ -4776,7 +5180,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -4794,7 +5197,6 @@ mod tests {
         let thread = confirmed_live_thread(now);
         let settings = unlocked_settings();
         let logs = Vec::new();
-        let validations = vec![sample_validation_result(&thread, 12.5, 4.0)];
         let request =
             build_upbit_order_request(&thread.market, LiveOrderIntent::MarketBuy, 20_000, None)
                 .expect("buy request");
@@ -4809,7 +5211,6 @@ mod tests {
                 settings: Ok(&settings),
                 credentials_available: Ok(true),
                 logs: Ok(&logs),
-                validation_results: Ok(&validations),
             },
         );
 
@@ -5034,6 +5435,8 @@ mod tests {
 
         assert!(!result.live_order_gate.allowed);
         assert!(!result.duplicate);
+        assert!(result.position_open);
+        assert_eq!(result.realized_pnl_krw, None);
         assert_eq!(log.thread_id, Some(thread.id));
         assert_eq!(log.source, PurchaseLogSource::InvestmentThread);
         assert_eq!(log.mode, ExecutionMode::Paper);
@@ -5084,6 +5487,90 @@ mod tests {
         assert!(second.duplicate);
         assert_eq!(second.idempotency_key, first.idempotency_key);
         assert_eq!(second.log.expect("existing log").id, existing.id);
+    }
+
+    #[test]
+    fn paper_sell_signal_closes_existing_paper_position_with_estimated_pnl() {
+        let now = Utc::now();
+        let mut thread = sample_thread(now);
+        thread.status = ThreadStatus::Paper;
+        let buy_signal = sample_strategy_signal(&thread, PaperSignalAction::Buy, now);
+        let sell_signal = sample_strategy_signal(
+            &thread,
+            PaperSignalAction::Sell,
+            now + chrono::Duration::hours(2),
+        );
+        let gate = live_order_gate_decision(
+            LiveOrderGateCheck {
+                source: LiveOrderGateSource::InvestmentThread,
+                thread_id: Some(thread.id),
+                related_schedule_id: None,
+                market: thread.market.clone(),
+                intent: None,
+                amount_krw: 5_000,
+                final_confirmation_status: LiveOrderFinalConfirmationStatus::Missing,
+                daily_trade_count: 0,
+                daily_trade_cap: thread.daily_trade_cap,
+                max_loss_percent: Some(thread.max_loss_percent),
+                latest_max_drawdown_percent: None,
+                checked_at: now,
+            },
+            vec![LiveOrderGateBlockReason::LiveModeNotEnabled],
+        );
+        let buy = build_paper_execution_result(&thread, buy_signal, gate.clone(), &[], 5_000);
+        let buy_log = buy.log.expect("buy log");
+
+        let sell =
+            build_paper_execution_result(&thread, sell_signal, gate, &[buy_log.clone()], 5_000);
+        let sell_log = sell.log.expect("sell log");
+
+        assert!(!sell.position_open);
+        assert_eq!(sell_log.action, PurchaseLogAction::MarketSell);
+        assert_eq!(sell_log.volume_btc, buy_log.volume_btc);
+        assert_eq!(
+            sell.realized_pnl_krw,
+            Some(sell_log.amount_krw as i64 - buy_log.amount_krw as i64)
+        );
+        assert!(sell.message.contains("실제 Upbit 주문 없음"));
+    }
+
+    #[test]
+    fn live_open_position_tracks_filled_buys_and_sells() {
+        let now = Utc::now();
+        let thread = confirmed_live_thread(now);
+        let buy = sample_thread_purchase_log(&thread, now);
+
+        let open = live_open_position(&thread, &[buy.clone()]).expect("open live position");
+        assert_eq!(open.amount_krw, buy.amount_krw);
+        assert_eq!(open.volume_btc, buy.volume_btc);
+
+        let mut partial_sell =
+            sample_thread_purchase_log(&thread, now + chrono::Duration::minutes(5));
+        partial_sell.action = PurchaseLogAction::MarketSell;
+        partial_sell.volume_btc = buy.volume_btc / 2.0;
+        partial_sell.amount_krw = buy.amount_krw / 2;
+
+        let partial = live_open_position(&thread, &[buy.clone(), partial_sell])
+            .expect("remaining live position");
+        assert_eq!(partial.volume_btc, buy.volume_btc / 2.0);
+        assert_eq!(partial.amount_krw, buy.amount_krw / 2);
+
+        let mut full_sell = sample_thread_purchase_log(&thread, now + chrono::Duration::minutes(10));
+        full_sell.action = PurchaseLogAction::MarketSell;
+        full_sell.volume_btc = buy.volume_btc;
+
+        assert!(live_open_position(&thread, &[buy, full_sell]).is_none());
+    }
+
+    #[test]
+    fn live_sell_estimate_uses_open_position_volume_and_signal_price() {
+        let position = LiveOpenPosition {
+            amount_krw: 20_000,
+            volume_btc: 0.25,
+        };
+
+        assert_eq!(estimated_live_sell_amount_krw(&position, 100_000.0), 24_988);
+        assert_eq!(estimated_live_sell_amount_krw(&position, 0.0), 0);
     }
 
     #[test]
@@ -5525,8 +6012,10 @@ mod tests {
             thread_id: thread.id,
             market: thread.market.clone(),
             strategy_profile: thread.strategy_profile.clone(),
+            strategy_version: crate::strategy::STRATEGY_VERSION_INTRADAY_MEAN_REVERSION.to_string(),
             action,
             reason: "테스트 Paper 신호".to_string(),
+            exit_reason: None,
             evaluated_at: now,
             candle_timestamp: now - chrono::Duration::minutes(30),
             price_krw: 10_000_000.0,
@@ -5542,6 +6031,8 @@ mod tests {
         ThreadValidationResult {
             id: uuid::Uuid::new_v4(),
             thread_id: thread.id,
+            strategy_version: crate::strategy::STRATEGY_VERSION_INTRADAY_MEAN_REVERSION.to_string(),
+            strategy_variant_label: "Test mean reversion".to_string(),
             status: ValidationStatus::Pass,
             period_days: 365,
             period_start: now - chrono::Duration::days(365),
@@ -5558,9 +6049,20 @@ mod tests {
             recent_90d_return_percent: return_percent / 2.0,
             recent_90d_dca_return_percent: return_percent / 3.0,
             fees_krw: 100,
+            cost_drag_krw: 120,
             fee_percent: 0.05,
             slippage_percent: 0.05,
             doubled_slippage_return_percent: return_percent - 0.5,
+            round_trips: 12,
+            win_rate_percent: 55.0,
+            profit_factor: 1.2,
+            expectancy_krw: 500.0,
+            average_hold_hours: 4.0,
+            exposure_percent: 12.0,
+            cash_flat_return_percent: 0.0,
+            stop_exit_count: 1,
+            time_exit_count: 2,
+            day_flat_exit_count: 3,
             reasons: vec!["테스트".to_string()],
             assumptions: vec!["테스트 가정".to_string()],
             created_at: now,

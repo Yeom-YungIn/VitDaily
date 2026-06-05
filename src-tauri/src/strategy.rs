@@ -10,7 +10,7 @@ use tokio::time::{sleep, Duration as TokioDuration};
 use uuid::Uuid;
 
 const DEFAULT_FEE_PERCENT: f64 = 0.05;
-const BACKTEST_DAYS: u32 = 365;
+pub const STRATEGY_VERSION_INTRADAY_MEAN_REVERSION: &str = "intraday_mean_reversion_v1";
 const UPBIT_CANDLE_BACKTEST_REQUEST_INTERVAL_MS: u64 = 250;
 const UPBIT_CANDLE_SIGNAL_REQUEST_INTERVAL_MS: u64 = 120;
 const UPBIT_RATE_LIMIT_RESET_MS: u64 = 1_100;
@@ -27,7 +27,13 @@ pub struct MarketCandle {
 
 #[derive(Debug, Clone, Copy)]
 struct ProfileRules {
-    max_trades_per_day: u32,
+    max_round_trips_per_day: u32,
+    min_round_trips_per_year: u32,
+    profit_factor_threshold: f64,
+    exposure_limit_percent: f64,
+    average_hold_limit_hours: f64,
+    recent_90d_tolerance_pp: f64,
+    max_hold_hours: f64,
     slippage_percent: f64,
     atr_limit: f64,
     chandelier_lookback: usize,
@@ -60,6 +66,8 @@ struct SimTrade {
     timestamp: DateTime<Utc>,
     price: f64,
     reason: String,
+    pnl_krw: Option<f64>,
+    hold_hours: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,8 +76,18 @@ struct Simulation {
     max_drawdown_percent: f64,
     trades: Vec<SimTrade>,
     fees_krw: f64,
+    cost_drag_krw: f64,
+    round_trips: u32,
+    win_rate_percent: f64,
+    profit_factor: f64,
+    expectancy_krw: f64,
+    average_hold_hours: f64,
+    exposure_percent: f64,
     max_loss_breached: bool,
     daily_cap_breached: bool,
+    stop_exit_count: u32,
+    time_exit_count: u32,
+    day_flat_exit_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -92,13 +110,17 @@ impl SupportedMarket {
     }
 }
 
-pub async fn fetch_recent_year_hourly_candles(
+pub async fn fetch_backtest_hourly_candles(
     market: &SupportedMarket,
+    days: u32,
 ) -> Result<Vec<MarketCandle>, String> {
+    let requested_days = days.max(1);
+    let target_candles = requested_days as usize * 24;
+    let max_batches = ((target_candles.saturating_add(199)) / 200).saturating_add(2);
     fetch_hourly_candles(
         market,
-        BACKTEST_DAYS,
-        50,
+        requested_days,
+        max_batches.max(2),
         200,
         TokioDuration::from_millis(UPBIT_CANDLE_BACKTEST_REQUEST_INTERVAL_MS),
     )
@@ -246,20 +268,24 @@ pub fn evaluate_latest_signal_for_thread(
     let latest = &candles[index];
     let evaluated_at = Utc::now();
 
-    let (action, reason) = if should_exit(thread, candles, &indicators, index, rules) {
+    let exit_candidate = signal_exit_reason(thread, candles, &indicators, index, rules);
+    let (action, reason, exit_reason) = if let Some(reason) = exit_candidate {
         (
             PaperSignalAction::Sell,
-            format!("Paper 평가: {}", exit_reason(&thread.strategy_profile)),
+            format!("Paper 평가: {}", reason),
+            Some(reason),
         )
     } else if should_enter(thread, candles, &indicators, index, rules) {
         (
             PaperSignalAction::Buy,
             format!("Paper 평가: {}", entry_reason(&thread.strategy_profile)),
+            None,
         )
     } else {
         (
             PaperSignalAction::Hold,
             "Paper 평가: 진입/청산 조건이 충족되지 않아 대기합니다".to_string(),
+            None,
         )
     };
 
@@ -267,8 +293,10 @@ pub fn evaluate_latest_signal_for_thread(
         thread_id: thread.id,
         market: thread.market.clone(),
         strategy_profile: thread.strategy_profile.clone(),
+        strategy_version: STRATEGY_VERSION_INTRADAY_MEAN_REVERSION.to_string(),
         action,
         reason,
+        exit_reason,
         evaluated_at,
         candle_timestamp: latest.timestamp,
         price_krw: latest.trade_price,
@@ -294,6 +322,7 @@ pub fn run_backtest_for_thread(
     candles: &[MarketCandle],
 ) -> Result<ThreadValidationResult, String> {
     validate_candles(candles)?;
+    let period_days = thread.duration_days.max(1);
     let rules = profile_rules(&thread.strategy_profile);
     let indicators = calculate_indicators(candles);
     let simulation = simulate_strategy(thread, candles, &indicators, rules, rules.slippage_percent);
@@ -306,7 +335,10 @@ pub fn run_backtest_for_thread(
     );
     let dca = simulate_dca(thread, candles, rules.slippage_percent);
     let buy_hold = simulate_buy_and_hold(thread, candles);
-    let recent_start = candles.len().saturating_sub(90 * 24);
+    let recent_window_days = period_days.min(90);
+    let recent_start = candles
+        .len()
+        .saturating_sub(recent_window_days as usize * 24);
     let recent_strategy = simulate_strategy(
         thread,
         &candles[recent_start..],
@@ -324,13 +356,16 @@ pub fn run_backtest_for_thread(
         &recent_dca,
         &doubled,
         rules,
+        period_days,
     );
 
     Ok(ThreadValidationResult {
         id: Uuid::new_v4(),
         thread_id: thread.id,
+        strategy_version: STRATEGY_VERSION_INTRADAY_MEAN_REVERSION.to_string(),
+        strategy_variant_label: strategy_variant_label(&thread.strategy_profile).to_string(),
         status,
-        period_days: BACKTEST_DAYS,
+        period_days,
         period_start: candles.first().expect("validated candles").timestamp,
         period_end: candles.last().expect("validated candles").timestamp,
         market: thread.market.clone(),
@@ -345,16 +380,33 @@ pub fn run_backtest_for_thread(
         recent_90d_return_percent: round2(recent_strategy.return_percent),
         recent_90d_dca_return_percent: round2(recent_dca.return_percent),
         fees_krw: simulation.fees_krw.round().max(0.0) as u64,
+        cost_drag_krw: simulation.cost_drag_krw.round().max(0.0) as u64,
         fee_percent: DEFAULT_FEE_PERCENT,
         slippage_percent: rules.slippage_percent,
         doubled_slippage_return_percent: round2(doubled.return_percent),
+        round_trips: simulation.round_trips,
+        win_rate_percent: round2(simulation.win_rate_percent),
+        profit_factor: round2(simulation.profit_factor),
+        expectancy_krw: round2(simulation.expectancy_krw),
+        average_hold_hours: round2(simulation.average_hold_hours),
+        exposure_percent: round2(simulation.exposure_percent),
+        cash_flat_return_percent: 0.0,
+        stop_exit_count: simulation.stop_exit_count,
+        time_exit_count: simulation.time_exit_count,
+        day_flat_exit_count: simulation.day_flat_exit_count,
         reasons,
         assumptions: vec![
             "Upbit 공개 60분 캔들 기준".to_string(),
             "주문 전송 없이 순수 시뮬레이션만 수행".to_string(),
+            format!(
+                "{}: 하루 단위 반복 매수/매도 평균회귀 전략",
+                STRATEGY_VERSION_INTRADAY_MEAN_REVERSION
+            ),
             format!("수수료 {}%/side fallback 적용", DEFAULT_FEE_PERCENT),
             format!("슬리피지 {}%/fill 적용", rules.slippage_percent),
-            "백테스트 통과는 수익 보장이 아닌 실거래 검토 자격입니다".to_string(),
+            format!("백테스트 기간은 투자 기간 {}일 기준", period_days),
+            "DCA와 Buy-and-hold는 참고 지표이며 PASS gate가 아닙니다".to_string(),
+            "백테스트 통과는 수익 보장이 아닌 모의 검증 자격입니다".to_string(),
         ],
         created_at: Utc::now(),
     })
@@ -375,26 +427,52 @@ fn validate_candles(candles: &[MarketCandle]) -> Result<(), String> {
 fn profile_rules(profile: &StrategyProfile) -> ProfileRules {
     match profile {
         StrategyProfile::Stable => ProfileRules {
-            max_trades_per_day: 2,
+            max_round_trips_per_day: 1,
+            min_round_trips_per_year: 10,
+            profit_factor_threshold: 1.10,
+            exposure_limit_percent: 20.0,
+            average_hold_limit_hours: 8.0,
+            recent_90d_tolerance_pp: 8.0,
+            max_hold_hours: 8.0,
             slippage_percent: 0.05,
             atr_limit: 0.06,
             chandelier_lookback: 22,
             chandelier_multiplier: 3.5,
         },
         StrategyProfile::Conservative => ProfileRules {
-            max_trades_per_day: 5,
+            max_round_trips_per_day: 2,
+            min_round_trips_per_year: 15,
+            profit_factor_threshold: 1.15,
+            exposure_limit_percent: 35.0,
+            average_hold_limit_hours: 12.0,
+            recent_90d_tolerance_pp: 10.0,
+            max_hold_hours: 12.0,
             slippage_percent: 0.07,
             atr_limit: 0.08,
             chandelier_lookback: 22,
             chandelier_multiplier: 3.0,
         },
         StrategyProfile::Aggressive => ProfileRules {
-            max_trades_per_day: 10,
+            max_round_trips_per_day: 4,
+            min_round_trips_per_year: 20,
+            profit_factor_threshold: 1.20,
+            exposure_limit_percent: 50.0,
+            average_hold_limit_hours: 18.0,
+            recent_90d_tolerance_pp: 12.0,
+            max_hold_hours: 18.0,
             slippage_percent: 0.10,
             atr_limit: 0.12,
             chandelier_lookback: 14,
             chandelier_multiplier: 2.0,
         },
+    }
+}
+
+fn strategy_variant_label(profile: &StrategyProfile) -> &'static str {
+    match profile {
+        StrategyProfile::Stable => "Stable mean reversion",
+        StrategyProfile::Conservative => "Conservative mean reversion",
+        StrategyProfile::Aggressive => "Aggressive mean reversion",
     }
 }
 
@@ -525,14 +603,22 @@ fn simulate_strategy(
 ) -> Simulation {
     let mut cash = thread.initial_budget_krw as f64;
     let mut units = 0.0;
-    let mut entry_value = thread.initial_budget_krw as f64;
+    let mut entry_cash = 0.0;
+    let mut entry_timestamp: Option<DateTime<Utc>> = None;
     let mut peak_value = thread.initial_budget_krw as f64;
     let mut max_drawdown_percent: f64 = 0.0;
     let mut fees_krw = 0.0;
+    let mut cost_drag_krw = 0.0;
     let mut trades = Vec::new();
-    let mut daily_trades: HashMap<(i32, u32, u32), u32> = HashMap::new();
+    let mut daily_trade_events: HashMap<(i32, u32, u32), u32> = HashMap::new();
+    let mut daily_round_trips: HashMap<(i32, u32, u32), u32> = HashMap::new();
     let mut max_loss_breached = false;
     let mut daily_cap_breached = false;
+    let mut stop_exit_count = 0;
+    let mut time_exit_count = 0;
+    let mut day_flat_exit_count = 0;
+    let mut round_trip_pnls = Vec::new();
+    let mut hold_hours_total = 0.0;
 
     for index in 30..candles.len() {
         let candle = &candles[index];
@@ -541,19 +627,28 @@ fn simulate_strategy(
         peak_value = peak_value.max(portfolio_value);
         max_drawdown_percent =
             max_drawdown_percent.max(percent_loss(peak_value, portfolio_value).max(0.0));
-        if percent_loss(entry_value, portfolio_value) >= thread.max_loss_percent {
+        if percent_loss(thread.initial_budget_krw as f64, portfolio_value)
+            >= thread.max_loss_percent
+        {
             max_loss_breached = true;
             if units > 0.0 {
-                let (proceeds, fee) = sell_value(units, price, slippage_percent);
-                cash += proceeds;
-                fees_krw += fee;
-                units = 0.0;
-                trades.push(SimTrade {
-                    side: TradeSide::Sell,
-                    timestamp: candle.timestamp,
-                    price,
-                    reason: "제품 최대 손실률 도달".to_string(),
-                });
+                close_position(
+                    &mut cash,
+                    &mut units,
+                    &mut entry_cash,
+                    &mut entry_timestamp,
+                    candle,
+                    slippage_percent,
+                    "제품 최대 손실률 도달".to_string(),
+                    &mut fees_krw,
+                    &mut cost_drag_krw,
+                    &mut trades,
+                    &mut daily_trade_events,
+                    &mut daily_round_trips,
+                    &mut round_trip_pnls,
+                    &mut hold_hours_total,
+                );
+                stop_exit_count += 1;
             }
             continue;
         }
@@ -563,20 +658,63 @@ fn simulate_strategy(
             candle.timestamp.month(),
             candle.timestamp.day(),
         );
-        let today_count = *daily_trades.get(&key).unwrap_or(&0);
+
+        if units > f64::EPSILON {
+            let reason = exit_reason_for_position(
+                thread,
+                candles,
+                indicators,
+                index,
+                rules,
+                entry_timestamp.expect("entry timestamp exists while position is open"),
+            );
+            if let Some(reason) = reason {
+                if reason.contains("일 단위") {
+                    day_flat_exit_count += 1;
+                } else if reason.contains("보유 시간") {
+                    time_exit_count += 1;
+                } else if reason.contains("스톱") || reason.contains("손실률") {
+                    stop_exit_count += 1;
+                }
+                close_position(
+                    &mut cash,
+                    &mut units,
+                    &mut entry_cash,
+                    &mut entry_timestamp,
+                    candle,
+                    slippage_percent,
+                    reason,
+                    &mut fees_krw,
+                    &mut cost_drag_krw,
+                    &mut trades,
+                    &mut daily_trade_events,
+                    &mut daily_round_trips,
+                    &mut round_trip_pnls,
+                    &mut hold_hours_total,
+                );
+            }
+        }
+
         if units <= f64::EPSILON {
-            if today_count >= rules.max_trades_per_day || today_count >= thread.daily_trade_cap {
+            let today_events = *daily_trade_events.get(&key).unwrap_or(&0);
+            let today_round_trips = *daily_round_trips.get(&key).unwrap_or(&0);
+            let event_cap = thread
+                .daily_trade_cap
+                .min(rules.max_round_trips_per_day.saturating_mul(2));
+            if today_events >= event_cap || today_round_trips >= rules.max_round_trips_per_day {
                 continue;
             }
             if should_enter(thread, candles, indicators, index, rules) {
                 let (bought_units, fee) = buy_units(cash, price, slippage_percent);
                 units = bought_units;
                 fees_krw += fee;
+                cost_drag_krw += fee + cash * slippage_percent / 100.0;
+                entry_cash = cash;
+                entry_timestamp = Some(candle.timestamp);
                 cash = 0.0;
-                entry_value = thread.initial_budget_krw as f64;
-                let count = daily_trades.entry(key).or_insert(0);
+                let count = daily_trade_events.entry(key).or_insert(0);
                 *count += 1;
-                if *count > rules.max_trades_per_day || *count > thread.daily_trade_cap {
+                if *count > event_cap {
                     daily_cap_breached = true;
                 }
                 trades.push(SimTrade {
@@ -584,48 +722,211 @@ fn simulate_strategy(
                     timestamp: candle.timestamp,
                     price,
                     reason: entry_reason(&thread.strategy_profile),
+                    pnl_krw: None,
+                    hold_hours: None,
                 });
             }
-        } else if should_exit(thread, candles, indicators, index, rules) {
-            let (proceeds, fee) = sell_value(units, price, slippage_percent);
-            cash += proceeds;
-            fees_krw += fee;
-            units = 0.0;
-            let count = daily_trades.entry(key).or_insert(0);
-            *count += 1;
-            if *count > thread.daily_trade_cap {
-                daily_cap_breached = true;
-            }
-            trades.push(SimTrade {
-                side: TradeSide::Sell,
-                timestamp: candle.timestamp,
-                price,
-                reason: exit_reason(&thread.strategy_profile),
-            });
         }
     }
 
     if units > 0.0 {
         let last = candles.last().expect("validated candles");
-        let (proceeds, fee) = sell_value(units, last.trade_price, slippage_percent);
-        cash += proceeds;
-        fees_krw += fee;
-        trades.push(SimTrade {
-            side: TradeSide::Sell,
-            timestamp: last.timestamp,
-            price: last.trade_price,
-            reason: "백테스트 기간 종료".to_string(),
-        });
+        close_position(
+            &mut cash,
+            &mut units,
+            &mut entry_cash,
+            &mut entry_timestamp,
+            last,
+            slippage_percent,
+            "백테스트 기간 종료".to_string(),
+            &mut fees_krw,
+            &mut cost_drag_krw,
+            &mut trades,
+            &mut daily_trade_events,
+            &mut daily_round_trips,
+            &mut round_trip_pnls,
+            &mut hold_hours_total,
+        );
     }
 
     let final_value = cash;
+    let round_trips = round_trip_pnls.len() as u32;
+    let wins = round_trip_pnls.iter().filter(|pnl| **pnl > 0.0).count() as f64;
+    let gross_profit: f64 = round_trip_pnls.iter().filter(|pnl| **pnl > 0.0).sum();
+    let gross_loss: f64 = round_trip_pnls
+        .iter()
+        .filter(|pnl| **pnl < 0.0)
+        .map(|pnl| pnl.abs())
+        .sum();
+    let profit_factor = if gross_loss <= f64::EPSILON {
+        if gross_profit > 0.0 {
+            gross_profit
+        } else {
+            0.0
+        }
+    } else {
+        gross_profit / gross_loss
+    };
+    let expectancy_krw = if round_trips == 0 {
+        0.0
+    } else {
+        round_trip_pnls.iter().sum::<f64>() / round_trips as f64
+    };
+    let total_period_hours = candles
+        .first()
+        .zip(candles.last())
+        .map(|(first, last)| {
+            (last.timestamp - first.timestamp).num_seconds().max(1) as f64 / 3600.0
+        })
+        .unwrap_or(1.0);
+
     Simulation {
         return_percent: percent_return(thread.initial_budget_krw as f64, final_value),
         max_drawdown_percent,
         trades,
         fees_krw,
+        cost_drag_krw,
+        round_trips,
+        win_rate_percent: if round_trips == 0 {
+            0.0
+        } else {
+            wins / round_trips as f64 * 100.0
+        },
+        profit_factor,
+        expectancy_krw,
+        average_hold_hours: if round_trips == 0 {
+            0.0
+        } else {
+            hold_hours_total / round_trips as f64
+        },
+        exposure_percent: (hold_hours_total / total_period_hours * 100.0).min(100.0),
         max_loss_breached,
         daily_cap_breached,
+        stop_exit_count,
+        time_exit_count,
+        day_flat_exit_count,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn close_position(
+    cash: &mut f64,
+    units: &mut f64,
+    entry_cash: &mut f64,
+    entry_timestamp: &mut Option<DateTime<Utc>>,
+    candle: &MarketCandle,
+    slippage_percent: f64,
+    reason: String,
+    fees_krw: &mut f64,
+    cost_drag_krw: &mut f64,
+    trades: &mut Vec<SimTrade>,
+    daily_trade_events: &mut HashMap<(i32, u32, u32), u32>,
+    daily_round_trips: &mut HashMap<(i32, u32, u32), u32>,
+    round_trip_pnls: &mut Vec<f64>,
+    hold_hours_total: &mut f64,
+) {
+    let open_units = *units;
+    let (proceeds, fee) = sell_value(open_units, candle.trade_price, slippage_percent);
+    let pnl_krw = proceeds - *entry_cash;
+    let hold_hours = entry_timestamp
+        .map(|entered_at| (candle.timestamp - entered_at).num_seconds().max(0) as f64 / 3600.0)
+        .unwrap_or(0.0);
+    let key = (
+        candle.timestamp.year(),
+        candle.timestamp.month(),
+        candle.timestamp.day(),
+    );
+
+    *cash += proceeds;
+    *fees_krw += fee;
+    *cost_drag_krw += fee + open_units * candle.trade_price * slippage_percent / 100.0;
+    *units = 0.0;
+    *entry_cash = 0.0;
+    *entry_timestamp = None;
+    *daily_trade_events.entry(key).or_insert(0) += 1;
+    *daily_round_trips.entry(key).or_insert(0) += 1;
+    round_trip_pnls.push(pnl_krw);
+    *hold_hours_total += hold_hours;
+    trades.push(SimTrade {
+        side: TradeSide::Sell,
+        timestamp: candle.timestamp,
+        price: candle.trade_price,
+        reason,
+        pnl_krw: Some(pnl_krw),
+        hold_hours: Some(hold_hours),
+    });
+}
+
+fn exit_reason_for_position(
+    thread: &InvestmentThread,
+    candles: &[MarketCandle],
+    indicators: &[IndicatorRow],
+    index: usize,
+    rules: ProfileRules,
+    entry_timestamp: DateTime<Utc>,
+) -> Option<String> {
+    let candle = &candles[index];
+    if candle.timestamp.date_naive() != entry_timestamp.date_naive() {
+        return Some("일 단위 포지션 정리".to_string());
+    }
+
+    let hold_hours = (candle.timestamp - entry_timestamp).num_seconds().max(0) as f64 / 3600.0;
+    if hold_hours >= rules.max_hold_hours {
+        return Some(format!(
+            "보유 시간 제한 {:.0}시간 도달",
+            rules.max_hold_hours
+        ));
+    }
+
+    signal_exit_reason(thread, candles, indicators, index, rules)
+}
+
+fn signal_exit_reason(
+    thread: &InvestmentThread,
+    candles: &[MarketCandle],
+    indicators: &[IndicatorRow],
+    index: usize,
+    rules: ProfileRules,
+) -> Option<String> {
+    if close_below_chandelier(candles, indicators, index, rules) {
+        return Some("ATR 스톱 도달".to_string());
+    }
+
+    let row = &indicators[index];
+    let price = candles[index].trade_price;
+    match thread.strategy_profile {
+        StrategyProfile::Stable => {
+            if row.bollinger_middle.is_some_and(|middle| price >= middle) {
+                Some("Bollinger 중단 목표 도달".to_string())
+            } else if bearish_crossover_persistent(indicators, index, 2) {
+                Some("MACD 약세 전환".to_string())
+            } else {
+                None
+            }
+        }
+        StrategyProfile::Conservative => {
+            if row.percent_b.is_some_and(|value| value >= 0.80)
+                || row.bollinger_middle.is_some_and(|middle| price >= middle)
+            {
+                Some("평균회귀 목표 구간 도달".to_string())
+            } else if bearish_crossover(indicators, index) && row.histogram.is_some_and(|h| h < 0.0)
+            {
+                Some("MACD 약세 전환".to_string())
+            } else {
+                None
+            }
+        }
+        StrategyProfile::Aggressive => {
+            if row.percent_b.is_some_and(|value| value >= 0.90)
+                || row.bollinger_upper.is_some_and(|upper| price >= upper)
+            {
+                Some("상단 밴드 반등 목표 도달".to_string())
+            } else if bearish_crossover(indicators, index) {
+                Some("MACD 약세 전환".to_string())
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -645,58 +946,27 @@ fn should_enter(
         return false;
     }
 
+    let volatility_ok = row.bandwidth.is_some_and(|value| value <= 0.35);
+
     match thread.strategy_profile {
         StrategyProfile::Stable => {
-            (histogram_rising(indicators, index, 2) || macd_above_signal(row))
-                && (row.percent_b.is_some_and(|v| (0.20..=0.80).contains(&v))
+            volatility_ok
+                && (histogram_rising(indicators, index, 1) || macd_above_signal(row))
+                && (row.percent_b.is_some_and(|v| (0.15..=0.55).contains(&v))
                     || recovered_above_lower_band(candles, indicators, index))
         }
         StrategyProfile::Conservative => {
-            (bullish_crossover(indicators, index, 3)
-                || positive_histogram_rising(indicators, index))
+            volatility_ok
+                && (bullish_crossover(indicators, index, 3)
+                    || positive_histogram_rising(indicators, index))
                 && (lower_band_recovery(candles, indicators, index)
-                    || middle_cross_after_lower_touch(candles, indicators, index))
+                    || row.percent_b.is_some_and(|v| (0.10..=0.45).contains(&v)))
         }
         StrategyProfile::Aggressive => {
-            macd_above_signal(row)
-                && histogram_rising(indicators, index, 2)
-                && row
-                    .bollinger_upper
-                    .is_some_and(|upper| candles[index].trade_price > upper)
-                && (bandwidth_squeeze_breakout(indicators, index)
-                    || bandwidth_expanding(indicators, index, 2))
-        }
-    }
-}
-
-fn should_exit(
-    thread: &InvestmentThread,
-    candles: &[MarketCandle],
-    indicators: &[IndicatorRow],
-    index: usize,
-    rules: ProfileRules,
-) -> bool {
-    let row = &indicators[index];
-    if close_below_chandelier(candles, indicators, index, rules) {
-        return true;
-    }
-
-    match thread.strategy_profile {
-        StrategyProfile::Stable => bearish_crossover_persistent(indicators, index, 2),
-        StrategyProfile::Conservative => {
-            bearish_crossover(indicators, index) && row.histogram.is_some_and(|h| h < 0.0)
-                || row
-                    .bollinger_upper
-                    .is_some_and(|upper| candles[index].trade_price >= upper)
-                || row.percent_b.is_some_and(|v| v >= 0.85)
-                    && histogram_decreasing(indicators, index, 1)
-        }
-        StrategyProfile::Aggressive => {
-            bearish_crossover(indicators, index)
-                || row
-                    .bollinger_upper
-                    .is_some_and(|upper| candles[index].trade_price < upper)
-                    && histogram_decreasing(indicators, index, 2)
+            row.bandwidth.is_some_and(|value| value <= 0.50)
+                && (histogram_rising(indicators, index, 1) || macd_above_signal(row))
+                && (lower_band_recovery(candles, indicators, index)
+                    || row.percent_b.is_some_and(|v| v <= 0.25))
         }
     }
 }
@@ -718,7 +988,7 @@ fn simulate_dca(
     candles: &[MarketCandle],
     slippage_percent: f64,
 ) -> Simulation {
-    let days = thread.duration_days.max(1).min(BACKTEST_DAYS) as usize;
+    let days = thread.duration_days.max(1) as usize;
     let daily_cash = thread.initial_budget_krw as f64 / days as f64;
     let mut cash_remaining = thread.initial_budget_krw as f64;
     let mut units = 0.0;
@@ -748,6 +1018,8 @@ fn simulate_dca(
                 timestamp: candle.timestamp,
                 price: candle.trade_price,
                 reason: "DCA 기준선 일일 진입".to_string(),
+                pnl_krw: None,
+                hold_hours: None,
             });
         }
         let value = cash_remaining + units * candle.trade_price;
@@ -764,8 +1036,18 @@ fn simulate_dca(
         max_drawdown_percent,
         trades,
         fees_krw,
+        cost_drag_krw: fees_krw,
+        round_trips: 0,
+        win_rate_percent: 0.0,
+        profit_factor: 0.0,
+        expectancy_krw: 0.0,
+        average_hold_hours: 0.0,
+        exposure_percent: 100.0,
         max_loss_breached: max_drawdown_percent > thread.max_loss_percent,
         daily_cap_breached: false,
+        stop_exit_count: 0,
+        time_exit_count: 0,
+        day_flat_exit_count: 0,
     }
 }
 
@@ -788,10 +1070,22 @@ fn simulate_buy_and_hold(thread: &InvestmentThread, candles: &[MarketCandle]) ->
             timestamp: first.timestamp,
             price: first.trade_price,
             reason: "Buy-and-hold 기준선 최초 진입".to_string(),
+            pnl_krw: None,
+            hold_hours: None,
         }],
         fees_krw: fee,
+        cost_drag_krw: fee,
+        round_trips: 0,
+        win_rate_percent: 0.0,
+        profit_factor: 0.0,
+        expectancy_krw: 0.0,
+        average_hold_hours: 0.0,
+        exposure_percent: 100.0,
         max_loss_breached: max_drawdown_percent > thread.max_loss_percent,
         daily_cap_breached: false,
+        stop_exit_count: 0,
+        time_exit_count: 0,
+        day_flat_exit_count: 0,
     }
 }
 
@@ -804,81 +1098,110 @@ fn evaluate_validation(
     recent_dca: &Simulation,
     doubled: &Simulation,
     rules: ProfileRules,
+    period_days: u32,
 ) -> (ValidationStatus, Vec<String>) {
     let mut failures = Vec::new();
     let mut reasons = Vec::new();
+    let min_round_trips_for_period = min_round_trips_for_period(rules, period_days);
 
     if simulation.max_loss_breached || simulation.max_drawdown_percent > thread.max_loss_percent {
         failures.push("제품 최대 손실률 기준을 초과했습니다".to_string());
     }
     if simulation.daily_cap_breached {
         failures.push(format!(
-            "일일 거래 제한을 초과했습니다: 전략 목표 {}회/일, 스레드 제한 {}회/일",
-            rules.max_trades_per_day, thread.daily_trade_cap
+            "일일 거래 제한을 초과했습니다: 전략 목표 {} round-trip/일, 스레드 제한 {} 이벤트/일",
+            rules.max_round_trips_per_day, thread.daily_trade_cap
         ));
     }
-    match thread.strategy_profile {
-        StrategyProfile::Stable => {
-            if simulation.return_percent < dca.return_percent - 3.0 {
-                failures.push("DCA 기준선보다 3%p 이상 낮습니다".to_string());
-            }
-            if simulation.max_drawdown_percent > dca.max_drawdown_percent {
-                failures.push("최대 낙폭이 DCA 기준선보다 큽니다".to_string());
-            }
-            if doubled.return_percent < -thread.max_loss_percent {
-                failures.push("슬리피지 2배 민감도에서 최대 손실 기준을 벗어납니다".to_string());
-            }
-        }
-        StrategyProfile::Conservative => {
-            if simulation.return_percent < dca.return_percent {
-                failures.push("DCA 기준선 수익률을 넘지 못했습니다".to_string());
-            }
-            if recent_strategy.return_percent < recent_dca.return_percent - 5.0 {
-                failures.push("최근 90일 결과가 DCA 대비 5%p 이상 낮습니다".to_string());
-            }
-            if simulation.max_drawdown_percent > buy_hold.max_drawdown_percent {
-                failures.push("최대 낙폭이 Buy-and-hold 기준선보다 큽니다".to_string());
-            }
-            if doubled.return_percent < -thread.max_loss_percent {
-                failures.push("슬리피지 2배 민감도에서 최대 손실 기준을 벗어납니다".to_string());
-            }
-        }
-        StrategyProfile::Aggressive => {
-            if simulation.return_percent < dca.return_percent + 3.0 {
-                failures.push("DCA 기준선보다 3%p 이상 높지 않습니다".to_string());
-            }
-            if recent_strategy.return_percent < recent_dca.return_percent - 7.0 {
-                failures.push("최근 90일 결과가 DCA 대비 7%p 이상 낮습니다".to_string());
-            }
-            if doubled.return_percent < -thread.max_loss_percent {
-                failures.push("슬리피지 2배 민감도에서 최대 손실 기준을 벗어납니다".to_string());
-            }
-        }
+
+    if simulation.return_percent <= 0.0 {
+        failures.push("현금 대기 기준선(0%)을 넘는 순수익을 만들지 못했습니다".to_string());
+    }
+    if simulation.expectancy_krw <= 0.0 {
+        failures.push("round-trip 기대값이 양수로 검증되지 않았습니다".to_string());
+    }
+    if simulation.round_trips < min_round_trips_for_period {
+        failures.push(format!(
+            "{}일 completed round-trip 수가 부족합니다: {}회 < 최소 {}회",
+            period_days, simulation.round_trips, min_round_trips_for_period
+        ));
+    }
+    if simulation.profit_factor < rules.profit_factor_threshold {
+        failures.push(format!(
+            "profit factor가 기준 미달입니다: {:.2} < {:.2}",
+            simulation.profit_factor, rules.profit_factor_threshold
+        ));
+    }
+    if doubled.return_percent < -thread.max_loss_percent {
+        failures.push("슬리피지 2배 민감도에서 최대 손실 기준을 벗어납니다".to_string());
+    }
+    if simulation.exposure_percent > rules.exposure_limit_percent {
+        failures.push(format!(
+            "시장 노출 시간이 기준을 초과했습니다: {:.2}% > {:.2}%",
+            simulation.exposure_percent, rules.exposure_limit_percent
+        ));
+    }
+    if simulation.average_hold_hours > rules.average_hold_limit_hours {
+        failures.push(format!(
+            "평균 보유 시간이 기준을 초과했습니다: {:.2}h > {:.2}h",
+            simulation.average_hold_hours, rules.average_hold_limit_hours
+        ));
+    }
+    if recent_strategy.return_percent < simulation.return_percent - rules.recent_90d_tolerance_pp {
+        failures.push(format!(
+            "최근 90일 수익률이 전체 결과 대비 허용 범위를 벗어납니다: {:.2}% < {:.2}%",
+            recent_strategy.return_percent,
+            simulation.return_percent - rules.recent_90d_tolerance_pp
+        ));
     }
 
     reasons.push(format!(
-        "전략 수익률 {}%, DCA {}%, Buy-and-hold {}%",
+        "전략 수익률 {}%, 현금 대기 0%, DCA 참고 {}%, Buy-and-hold 참고 {}%",
         round2(simulation.return_percent),
         round2(dca.return_percent),
         round2(buy_hold.return_percent)
     ));
     reasons.push(format!(
-        "최대 낙폭 {}%, 수수료 약 {}원, 체결 {}건",
+        "round-trip {}회, 기간 기준 최소 {}회, 승률 {}%, PF {}, 기대값 {}원",
+        simulation.round_trips,
+        min_round_trips_for_period,
+        round2(simulation.win_rate_percent),
+        round2(simulation.profit_factor),
+        simulation.expectancy_krw.round() as i64
+    ));
+    reasons.push(format!(
+        "노출 {}%, 평균 보유 {}h, 최대 낙폭 {}%, 비용 약 {}원, 체결 {}건",
+        round2(simulation.exposure_percent),
+        round2(simulation.average_hold_hours),
         round2(simulation.max_drawdown_percent),
-        simulation.fees_krw.round().max(0.0) as u64,
+        simulation.cost_drag_krw.round().max(0.0) as u64,
         simulation.trades.len()
+    ));
+    reasons.push(format!(
+        "DCA/Buy-and-hold는 방향성 노출 참고값이며 PASS gate가 아닙니다 · 최근 90일 DCA 참고 {}%",
+        round2(recent_dca.return_percent)
     ));
     if let Some(last_trade) = simulation.trades.last() {
         let side = match last_trade.side {
             TradeSide::Buy => "매수",
             TradeSide::Sell => "매도",
         };
+        let outcome = last_trade
+            .pnl_krw
+            .map(|pnl| format!(" · P/L {}원", pnl.round() as i64))
+            .unwrap_or_default();
+        let hold = last_trade
+            .hold_hours
+            .map(|hours| format!(" · 보유 {:.1}h", hours))
+            .unwrap_or_default();
         reasons.push(format!(
-            "마지막 신호: {} · {} · {:.0}원 · {}",
+            "마지막 신호: {} · {} · {:.0}원 · {}{}{}",
             last_trade.timestamp.format("%Y-%m-%d %H:%M UTC"),
             side,
             last_trade.price,
-            last_trade.reason
+            last_trade.reason,
+            outcome,
+            hold
         ));
     }
     if failures.is_empty() {
@@ -888,6 +1211,12 @@ fn evaluate_validation(
         reasons.extend(failures);
         (ValidationStatus::Fail, reasons)
     }
+}
+
+fn min_round_trips_for_period(rules: ProfileRules, period_days: u32) -> u32 {
+    ((rules.min_round_trips_per_year as f64 * period_days.max(1) as f64) / 365.0)
+        .ceil()
+        .max(1.0) as u32
 }
 
 fn macd_above_signal(row: &IndicatorRow) -> bool {
@@ -952,17 +1281,6 @@ fn histogram_rising(indicators: &[IndicatorRow], index: usize, candles: usize) -
     })
 }
 
-fn histogram_decreasing(indicators: &[IndicatorRow], index: usize, candles: usize) -> bool {
-    if index < candles {
-        return false;
-    }
-    (0..candles).all(|offset| {
-        let current = indicators[index - offset].histogram;
-        let previous = indicators[index - offset - 1].histogram;
-        matches!((current, previous), (Some(c), Some(p)) if c < p)
-    })
-}
-
 fn positive_histogram_rising(indicators: &[IndicatorRow], index: usize) -> bool {
     indicators[index]
         .histogram
@@ -999,57 +1317,6 @@ fn lower_band_recovery(
             .is_some_and(|lower| candles[index].trade_price > lower)
 }
 
-fn middle_cross_after_lower_touch(
-    candles: &[MarketCandle],
-    indicators: &[IndicatorRow],
-    index: usize,
-) -> bool {
-    if index < 2 {
-        return false;
-    }
-    let touched_lower_recently =
-        (index - 2..index).any(|i| indicators[i].percent_b.is_some_and(|value| value <= 0.25));
-    touched_lower_recently
-        && indicators[index - 1]
-            .bollinger_middle
-            .is_some_and(|middle| candles[index - 1].trade_price <= middle)
-        && indicators[index]
-            .bollinger_middle
-            .is_some_and(|middle| candles[index].trade_price > middle)
-}
-
-fn bandwidth_squeeze_breakout(indicators: &[IndicatorRow], index: usize) -> bool {
-    if index < 120 {
-        return false;
-    }
-    let current = indicators[index].bandwidth.unwrap_or(f64::MAX);
-    let mut history: Vec<f64> = indicators[index - 120..index]
-        .iter()
-        .filter_map(|row| row.bandwidth)
-        .collect();
-    if history.len() < 60 {
-        return false;
-    }
-    history.sort_by(|a, b| a.total_cmp(b));
-    let threshold = history[history.len() / 4];
-    let squeezed_recently = index.saturating_sub(10)..index;
-    squeezed_recently
-        .filter_map(|i| indicators[i].bandwidth)
-        .any(|value| value <= threshold)
-        && current > threshold
-}
-
-fn bandwidth_expanding(indicators: &[IndicatorRow], index: usize, candles: usize) -> bool {
-    if index < candles {
-        return false;
-    }
-    (0..candles).all(|offset| {
-        let current = indicators[index - offset].bandwidth;
-        let previous = indicators[index - offset - 1].bandwidth;
-        matches!((current, previous), (Some(c), Some(p)) if c > p)
-    })
-}
-
 fn close_below_chandelier(
     candles: &[MarketCandle],
     indicators: &[IndicatorRow],
@@ -1079,14 +1346,6 @@ fn entry_reason(profile: &StrategyProfile) -> String {
         StrategyProfile::Stable => "MACD 약세 회피와 Bollinger/ATR 안전 필터 통과".to_string(),
         StrategyProfile::Conservative => "MACD 양호와 Bollinger 회복 조건 충족".to_string(),
         StrategyProfile::Aggressive => "MACD 모멘텀과 Bollinger 돌파 조건 충족".to_string(),
-    }
-}
-
-fn exit_reason(profile: &StrategyProfile) -> String {
-    match profile {
-        StrategyProfile::Stable => "ATR 스톱 또는 MACD 약세 지속".to_string(),
-        StrategyProfile::Conservative => "ATR 스톱, MACD 약세 또는 Bollinger 목표 도달".to_string(),
-        StrategyProfile::Aggressive => "ATR 스톱, MACD 약세 또는 돌파 실패".to_string(),
     }
 }
 
@@ -1174,22 +1433,8 @@ mod tests {
     fn product_max_loss_forces_validation_failure() {
         let mut thread = sample_thread();
         thread.max_loss_percent = 1.0;
-        let losing = Simulation {
-            return_percent: -3.0,
-            max_drawdown_percent: 2.0,
-            trades: Vec::new(),
-            fees_krw: 0.0,
-            max_loss_breached: true,
-            daily_cap_breached: false,
-        };
-        let baseline = Simulation {
-            return_percent: -1.0,
-            max_drawdown_percent: 1.0,
-            trades: Vec::new(),
-            fees_krw: 0.0,
-            max_loss_breached: false,
-            daily_cap_breached: false,
-        };
+        let losing = test_simulation(-3.0, 2.0, true);
+        let baseline = test_simulation(-1.0, 1.0, false);
 
         let (status, reasons) = evaluate_validation(
             &thread,
@@ -1200,10 +1445,43 @@ mod tests {
             &baseline,
             &losing,
             profile_rules(&thread.strategy_profile),
+            thread.duration_days,
         );
 
         assert_eq!(status, ValidationStatus::Fail);
         assert!(reasons.iter().any(|reason| reason.contains("손실률")));
+    }
+
+    #[test]
+    fn validation_uses_intraday_round_trip_gates_not_dca_outperformance() {
+        let thread = sample_thread();
+        let rules = profile_rules(&thread.strategy_profile);
+        let mut strategy = test_simulation(1.2, 0.5, false);
+        strategy.round_trips = min_round_trips_for_period(rules, thread.duration_days);
+        strategy.profit_factor = rules.profit_factor_threshold;
+        strategy.expectancy_krw = 500.0;
+        strategy.average_hold_hours = rules.average_hold_limit_hours;
+        strategy.exposure_percent = rules.exposure_limit_percent;
+        let mut dca = test_simulation(15.0, 3.0, false);
+        dca.exposure_percent = 100.0;
+        let buy_hold = test_simulation(30.0, 8.0, false);
+
+        let (status, reasons) = evaluate_validation(
+            &thread,
+            &strategy,
+            &dca,
+            &buy_hold,
+            &strategy,
+            &dca,
+            &strategy,
+            rules,
+            thread.duration_days,
+        );
+
+        assert_eq!(status, ValidationStatus::Pass);
+        assert!(reasons
+            .iter()
+            .any(|reason| reason.contains("PASS gate가 아닙니다")));
     }
 
     #[test]
@@ -1236,6 +1514,31 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn test_simulation(
+        return_percent: f64,
+        max_drawdown_percent: f64,
+        max_loss_breached: bool,
+    ) -> Simulation {
+        Simulation {
+            return_percent,
+            max_drawdown_percent,
+            trades: Vec::new(),
+            fees_krw: 0.0,
+            cost_drag_krw: 0.0,
+            round_trips: 0,
+            win_rate_percent: 0.0,
+            profit_factor: 0.0,
+            expectancy_krw: 0.0,
+            average_hold_hours: 0.0,
+            exposure_percent: 0.0,
+            max_loss_breached,
+            daily_cap_breached: false,
+            stop_exit_count: 0,
+            time_exit_count: 0,
+            day_flat_exit_count: 0,
+        }
     }
 
     fn sample_thread() -> InvestmentThread {
