@@ -265,6 +265,7 @@ export interface StrategySignalEvaluation {
   evaluatedAt: string;
   candleTimestamp: string;
   priceKrw: number;
+  recommendedOrderAmountKrw?: number | null;
 }
 
 export interface PaperExecutionResult {

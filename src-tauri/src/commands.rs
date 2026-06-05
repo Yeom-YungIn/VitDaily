@@ -402,7 +402,7 @@ pub async fn run_thread_paper_execution(thread_id: String) -> Result<PaperExecut
     let candles = crate::strategy::fetch_recent_signal_hourly_candles(&thread.market).await?;
     let signal = crate::strategy::evaluate_latest_signal_for_thread(&thread, &candles)?;
     let requested_at = signal.evaluated_at;
-    let amount_krw = paper_order_amount_krw(&thread);
+    let amount_krw = strategy_signal_order_amount_krw(&thread, &signal);
     let gate = evaluate_live_order_gate(LiveOrderGateInput::investment_thread(
         &thread,
         amount_krw,
@@ -1193,7 +1193,7 @@ async fn run_live_auto_loop_tick_with_executor<E: LiveOrderExecutor>(
 ) -> Result<ThreadAutoLoopResult, String> {
     let candles = crate::strategy::fetch_recent_signal_hourly_candles(&thread.market).await?;
     let signal = crate::strategy::evaluate_latest_signal_for_thread(&thread, &candles)?;
-    let amount_krw = paper_order_amount_krw(&thread);
+    let amount_krw = strategy_signal_order_amount_krw(&thread, &signal);
     let logs = load_logs().map_err(|error| error.to_string())?;
     let open_position = live_open_position(&thread, &logs);
 
@@ -1267,8 +1267,9 @@ async fn run_live_auto_loop_tick_with_executor<E: LiveOrderExecutor>(
                 thread_id: thread.id,
                 mode: ThreadAutoLoopMode::Live,
                 action: ThreadAutoLoopAction::DuplicateTick,
-                message: "동일한 Live tick 매도 주문이 이미 제출 또는 체결되어 중복 제출을 막았습니다"
-                    .to_string(),
+                message:
+                    "동일한 Live tick 매도 주문이 이미 제출 또는 체결되어 중복 제출을 막았습니다"
+                        .to_string(),
                 idempotency_key: Some(idempotency_key),
                 retry_count: retry_count as u32,
                 paper_result: None,
@@ -1299,8 +1300,9 @@ async fn run_live_auto_loop_tick_with_executor<E: LiveOrderExecutor>(
                 thread_id: thread.id,
                 mode: ThreadAutoLoopMode::Live,
                 action: ThreadAutoLoopAction::RetryLimited,
-                message: "동일 tick의 Upbit 매도 오류 retry 제한에 도달해 주문을 제출하지 않았습니다"
-                    .to_string(),
+                message:
+                    "동일 tick의 Upbit 매도 오류 retry 제한에 도달해 주문을 제출하지 않았습니다"
+                        .to_string(),
                 idempotency_key: Some(idempotency_key),
                 retry_count: retry_count as u32,
                 paper_result: None,
@@ -2380,9 +2382,7 @@ fn estimated_live_sell_amount_krw(position: &LiveOpenPosition, price_krw: f64) -
     if !price_krw.is_finite() || price_krw <= 0.0 {
         return 0;
     }
-    (position.volume_btc * price_krw * 0.9995)
-        .round()
-        .max(0.0) as u64
+    (position.volume_btc * price_krw * 0.9995).round().max(0.0) as u64
 }
 
 fn format_live_order_volume(volume: f64) -> String {
@@ -2432,6 +2432,15 @@ fn build_paper_sell_log(
 fn paper_order_amount_krw(thread: &InvestmentThread) -> u64 {
     let days = thread.duration_days.max(1) as u64;
     (thread.initial_budget_krw / days).max(5_000)
+}
+
+fn strategy_signal_order_amount_krw(
+    thread: &InvestmentThread,
+    signal: &StrategySignalEvaluation,
+) -> u64 {
+    signal
+        .recommended_order_amount_krw
+        .unwrap_or_else(|| paper_order_amount_krw(thread))
 }
 
 fn paper_idempotency_key(
@@ -5456,6 +5465,16 @@ mod tests {
     }
 
     #[test]
+    fn strategy_signal_order_amount_prefers_recommended_amount() {
+        let now = Utc::now();
+        let thread = sample_thread(now);
+        let mut signal = sample_strategy_signal(&thread, PaperSignalAction::Buy, now);
+        signal.recommended_order_amount_krw = Some(25_000);
+
+        assert_eq!(strategy_signal_order_amount_krw(&thread, &signal), 25_000);
+    }
+
+    #[test]
     fn duplicate_paper_tick_reuses_existing_log_by_idempotency_key() {
         let now = Utc::now();
         let mut thread = sample_thread(now);
@@ -5555,7 +5574,8 @@ mod tests {
         assert_eq!(partial.volume_btc, buy.volume_btc / 2.0);
         assert_eq!(partial.amount_krw, buy.amount_krw / 2);
 
-        let mut full_sell = sample_thread_purchase_log(&thread, now + chrono::Duration::minutes(10));
+        let mut full_sell =
+            sample_thread_purchase_log(&thread, now + chrono::Duration::minutes(10));
         full_sell.action = PurchaseLogAction::MarketSell;
         full_sell.volume_btc = buy.volume_btc;
 
@@ -6019,6 +6039,7 @@ mod tests {
             evaluated_at: now,
             candle_timestamp: now - chrono::Duration::minutes(30),
             price_krw: 10_000_000.0,
+            recommended_order_amount_krw: None,
         }
     }
 

@@ -9,8 +9,9 @@ use std::collections::HashMap;
 use tokio::time::{sleep, Duration as TokioDuration};
 use uuid::Uuid;
 
-const DEFAULT_FEE_PERCENT: f64 = 0.05;
 pub const STRATEGY_VERSION_INTRADAY_MEAN_REVERSION: &str = "intraday_mean_reversion_v1";
+const DEFAULT_FEE_PERCENT: f64 = 0.05;
+const MINIMUM_BUY_AMOUNT_KRW: u64 = 5_000;
 const UPBIT_CANDLE_BACKTEST_REQUEST_INTERVAL_MS: u64 = 250;
 const UPBIT_CANDLE_SIGNAL_REQUEST_INTERVAL_MS: u64 = 120;
 const UPBIT_RATE_LIMIT_RESET_MS: u64 = 1_100;
@@ -68,6 +69,13 @@ struct SimTrade {
     reason: String,
     pnl_krw: Option<f64>,
     hold_hours: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntrySignalStrength {
+    Normal,
+    Strong,
+    VeryStrong,
 }
 
 #[derive(Debug, Clone)]
@@ -269,18 +277,38 @@ pub fn evaluate_latest_signal_for_thread(
     let evaluated_at = Utc::now();
 
     let exit_candidate = signal_exit_reason(thread, candles, &indicators, index, rules);
+    let entry_strength = if exit_candidate.is_none() {
+        entry_signal_strength(thread, candles, &indicators, index, rules)
+    } else {
+        None
+    };
+    let recommended_order_amount_krw = entry_strength.and_then(|strength| {
+        strategy_order_amount_krw(thread, thread.initial_budget_krw as f64, strength)
+    });
     let (action, reason, exit_reason) = if let Some(reason) = exit_candidate {
         (
             PaperSignalAction::Sell,
             format!("Paper 평가: {}", reason),
             Some(reason),
         )
-    } else if should_enter(thread, candles, &indicators, index, rules) {
-        (
-            PaperSignalAction::Buy,
-            format!("Paper 평가: {}", entry_reason(&thread.strategy_profile)),
-            None,
-        )
+    } else if let Some(strength) = entry_strength {
+        if let Some(amount) = recommended_order_amount_krw {
+            (
+                PaperSignalAction::Buy,
+                format!(
+                    "Paper 평가: {} · 추천 매수금액 {}원",
+                    entry_reason(&thread.strategy_profile, strength),
+                    amount
+                ),
+                None,
+            )
+        } else {
+            (
+                PaperSignalAction::Hold,
+                "Paper 평가: 남은 투자금이 최소 매수금액보다 작아 대기합니다".to_string(),
+                None,
+            )
+        }
     } else {
         (
             PaperSignalAction::Hold,
@@ -300,6 +328,7 @@ pub fn evaluate_latest_signal_for_thread(
         evaluated_at,
         candle_timestamp: latest.timestamp,
         price_krw: latest.trade_price,
+        recommended_order_amount_krw,
     })
 }
 
@@ -628,7 +657,7 @@ fn simulate_strategy(
         max_drawdown_percent =
             max_drawdown_percent.max(percent_loss(peak_value, portfolio_value).max(0.0));
         if percent_loss(thread.initial_budget_krw as f64, portfolio_value)
-            >= thread.max_loss_percent
+            >= strategy_max_loss_percent(&thread.strategy_profile)
         {
             max_loss_breached = true;
             if units > 0.0 {
@@ -639,7 +668,10 @@ fn simulate_strategy(
                     &mut entry_timestamp,
                     candle,
                     slippage_percent,
-                    "제품 최대 손실률 도달".to_string(),
+                    format!(
+                        "{} 큰 손실 기준 도달",
+                        strategy_variant_label(&thread.strategy_profile)
+                    ),
                     &mut fees_krw,
                     &mut cost_drag_krw,
                     &mut trades,
@@ -704,14 +736,19 @@ fn simulate_strategy(
             if today_events >= event_cap || today_round_trips >= rules.max_round_trips_per_day {
                 continue;
             }
-            if should_enter(thread, candles, indicators, index, rules) {
-                let (bought_units, fee) = buy_units(cash, price, slippage_percent);
+            if let Some(strength) = entry_signal_strength(thread, candles, indicators, index, rules)
+            {
+                let Some(order_cash) = strategy_order_amount_krw(thread, cash, strength) else {
+                    continue;
+                };
+                let order_cash = order_cash as f64;
+                let (bought_units, fee) = buy_units(order_cash, price, slippage_percent);
                 units = bought_units;
                 fees_krw += fee;
-                cost_drag_krw += fee + cash * slippage_percent / 100.0;
-                entry_cash = cash;
+                cost_drag_krw += fee + order_cash * slippage_percent / 100.0;
+                entry_cash = order_cash;
                 entry_timestamp = Some(candle.timestamp);
-                cash = 0.0;
+                cash -= order_cash;
                 let count = daily_trade_events.entry(key).or_insert(0);
                 *count += 1;
                 if *count > event_cap {
@@ -721,7 +758,7 @@ fn simulate_strategy(
                     side: TradeSide::Buy,
                     timestamp: candle.timestamp,
                     price,
-                    reason: entry_reason(&thread.strategy_profile),
+                    reason: entry_reason(&thread.strategy_profile, strength),
                     pnl_krw: None,
                     hold_hours: None,
                 });
@@ -930,44 +967,110 @@ fn signal_exit_reason(
     }
 }
 
-fn should_enter(
+fn entry_signal_strength(
     thread: &InvestmentThread,
     candles: &[MarketCandle],
     indicators: &[IndicatorRow],
     index: usize,
     rules: ProfileRules,
-) -> bool {
+) -> Option<EntrySignalStrength> {
     let row = &indicators[index];
     let atr_ratio = row.atr14.map(|atr| atr / candles[index].trade_price);
     if atr_ratio
         .map(|ratio| ratio > rules.atr_limit)
         .unwrap_or(true)
     {
-        return false;
+        return None;
     }
 
     let volatility_ok = row.bandwidth.is_some_and(|value| value <= 0.35);
 
     match thread.strategy_profile {
         StrategyProfile::Stable => {
-            volatility_ok
-                && (histogram_rising(indicators, index, 1) || macd_above_signal(row))
-                && (row.percent_b.is_some_and(|v| (0.15..=0.55).contains(&v))
-                    || recovered_above_lower_band(candles, indicators, index))
+            let trend_ok = histogram_rising(indicators, index, 1) || macd_above_signal(row);
+            let price_ok = row.percent_b.is_some_and(|v| (0.15..=0.55).contains(&v))
+                || recovered_above_lower_band(candles, indicators, index);
+            if !volatility_ok || !trend_ok || !price_ok {
+                None
+            } else if recovered_above_lower_band(candles, indicators, index)
+                && positive_histogram_rising(indicators, index)
+            {
+                Some(EntrySignalStrength::Strong)
+            } else {
+                Some(EntrySignalStrength::Normal)
+            }
         }
         StrategyProfile::Conservative => {
-            volatility_ok
-                && (bullish_crossover(indicators, index, 3)
-                    || positive_histogram_rising(indicators, index))
-                && (lower_band_recovery(candles, indicators, index)
-                    || row.percent_b.is_some_and(|v| (0.10..=0.45).contains(&v)))
+            let trend_ok = bullish_crossover(indicators, index, 3)
+                || positive_histogram_rising(indicators, index);
+            let price_ok = lower_band_recovery(candles, indicators, index)
+                || row.percent_b.is_some_and(|v| (0.10..=0.45).contains(&v));
+            if !volatility_ok || !trend_ok || !price_ok {
+                None
+            } else if lower_band_recovery(candles, indicators, index)
+                && positive_histogram_rising(indicators, index)
+            {
+                Some(EntrySignalStrength::Strong)
+            } else {
+                Some(EntrySignalStrength::Normal)
+            }
         }
         StrategyProfile::Aggressive => {
-            row.bandwidth.is_some_and(|value| value <= 0.50)
-                && (histogram_rising(indicators, index, 1) || macd_above_signal(row))
-                && (lower_band_recovery(candles, indicators, index)
-                    || row.percent_b.is_some_and(|v| v <= 0.25))
+            let volatility_ok = row.bandwidth.is_some_and(|value| value <= 0.50);
+            let trend_ok = histogram_rising(indicators, index, 1) || macd_above_signal(row);
+            let price_ok = lower_band_recovery(candles, indicators, index)
+                || row.percent_b.is_some_and(|v| v <= 0.25);
+            if !volatility_ok || !trend_ok || !price_ok {
+                None
+            } else if row.bandwidth.is_some_and(|value| value <= 0.30)
+                && lower_band_recovery(candles, indicators, index)
+                && positive_histogram_rising(indicators, index)
+            {
+                Some(EntrySignalStrength::VeryStrong)
+            } else if lower_band_recovery(candles, indicators, index)
+                || positive_histogram_rising(indicators, index)
+            {
+                Some(EntrySignalStrength::Strong)
+            } else {
+                Some(EntrySignalStrength::Normal)
+            }
         }
+    }
+}
+
+fn strategy_order_amount_krw(
+    thread: &InvestmentThread,
+    available_cash: f64,
+    strength: EntrySignalStrength,
+) -> Option<u64> {
+    if !available_cash.is_finite() || available_cash < MINIMUM_BUY_AMOUNT_KRW as f64 {
+        return None;
+    }
+    let allocation = match (&thread.strategy_profile, strength) {
+        (StrategyProfile::Stable, EntrySignalStrength::Normal) => 0.15,
+        (
+            StrategyProfile::Stable,
+            EntrySignalStrength::Strong | EntrySignalStrength::VeryStrong,
+        ) => 0.25,
+        (StrategyProfile::Conservative, EntrySignalStrength::Normal) => 0.25,
+        (StrategyProfile::Conservative, EntrySignalStrength::Strong) => 0.50,
+        (StrategyProfile::Conservative, EntrySignalStrength::VeryStrong) => 0.65,
+        (StrategyProfile::Aggressive, EntrySignalStrength::Normal) => 0.35,
+        (StrategyProfile::Aggressive, EntrySignalStrength::Strong) => 0.70,
+        (StrategyProfile::Aggressive, EntrySignalStrength::VeryStrong) => 1.00,
+    };
+    let capped_cash = available_cash.floor().max(0.0) as u64;
+    let desired = (available_cash * allocation)
+        .round()
+        .max(MINIMUM_BUY_AMOUNT_KRW as f64) as u64;
+    Some(desired.min(capped_cash))
+}
+
+fn strategy_max_loss_percent(profile: &StrategyProfile) -> f64 {
+    match profile {
+        StrategyProfile::Stable => 5.0,
+        StrategyProfile::Conservative => 15.0,
+        StrategyProfile::Aggressive => 50.0,
     }
 }
 
@@ -1341,11 +1444,16 @@ fn close_below_chandelier(
     candles[index].trade_price < high - atr * rules.chandelier_multiplier
 }
 
-fn entry_reason(profile: &StrategyProfile) -> String {
+fn entry_reason(profile: &StrategyProfile, strength: EntrySignalStrength) -> String {
+    let size = match strength {
+        EntrySignalStrength::Normal => "소액",
+        EntrySignalStrength::Strong => "중간 금액",
+        EntrySignalStrength::VeryStrong => "최대 금액",
+    };
     match profile {
-        StrategyProfile::Stable => "MACD 약세 회피와 Bollinger/ATR 안전 필터 통과".to_string(),
-        StrategyProfile::Conservative => "MACD 양호와 Bollinger 회복 조건 충족".to_string(),
-        StrategyProfile::Aggressive => "MACD 모멘텀과 Bollinger 돌파 조건 충족".to_string(),
+        StrategyProfile::Stable => format!("안정형 조건 충족 · {size} 매수"),
+        StrategyProfile::Conservative => format!("보수형 조건 충족 · {size} 매수"),
+        StrategyProfile::Aggressive => format!("공격형 조건 충족 · {size} 매수"),
     }
 }
 
@@ -1409,6 +1517,44 @@ mod tests {
         let rules = profile_rules(&StrategyProfile::Conservative);
 
         assert!(close_below_chandelier(&candles, &indicators, 79, rules));
+    }
+
+    #[test]
+    fn strategy_order_amount_scales_by_profile_and_signal_strength() {
+        let mut thread = sample_thread();
+        thread.initial_budget_krw = 100_000;
+
+        thread.strategy_profile = StrategyProfile::Stable;
+        assert_eq!(
+            strategy_order_amount_krw(&thread, 100_000.0, EntrySignalStrength::Strong),
+            Some(25_000)
+        );
+
+        thread.strategy_profile = StrategyProfile::Conservative;
+        assert_eq!(
+            strategy_order_amount_krw(&thread, 100_000.0, EntrySignalStrength::Normal),
+            Some(25_000)
+        );
+        assert_eq!(
+            strategy_order_amount_krw(&thread, 100_000.0, EntrySignalStrength::Strong),
+            Some(50_000)
+        );
+
+        thread.strategy_profile = StrategyProfile::Aggressive;
+        assert_eq!(
+            strategy_order_amount_krw(&thread, 100_000.0, EntrySignalStrength::VeryStrong),
+            Some(100_000)
+        );
+    }
+
+    #[test]
+    fn strategy_order_amount_rejects_cash_below_minimum_buy_amount() {
+        let thread = sample_thread();
+
+        assert_eq!(
+            strategy_order_amount_krw(&thread, 4_999.0, EntrySignalStrength::VeryStrong),
+            None
+        );
     }
 
     #[test]

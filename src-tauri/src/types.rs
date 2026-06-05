@@ -473,6 +473,8 @@ pub struct StrategySignalEvaluation {
     pub evaluated_at: DateTime<Utc>,
     pub candle_timestamp: DateTime<Utc>,
     pub price_krw: f64,
+    #[serde(default)]
+    pub recommended_order_amount_krw: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
